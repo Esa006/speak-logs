@@ -1,0 +1,340 @@
+import { useState, useRef, useCallback } from 'react'
+import 'bootstrap/dist/css/bootstrap.min.css'
+import 'bootstrap-icons/font/bootstrap-icons.css'
+import './SpeechPipeline.css'
+
+/* ─────────────────────────────────────────────
+   Steps:  PERMISSION  →  LANGUAGE  →  RECORD  →  TRANSCRIPT
+   ───────────────────────────────────────────── */
+const STEP = {
+  PERMISSION:  'PERMISSION',
+  LANGUAGE:    'LANGUAGE',
+  RECORD:      'RECORD',
+  TRANSCRIPT:  'TRANSCRIPT',
+}
+
+const LANGS = [
+  { code: 'ta-IN', native: 'தமிழ்',  english: 'Tamil'   },
+  { code: 'en-IN', native: 'English', english: 'English (India)' },
+]
+
+export default function SpeechPipeline() {
+  const [step, setStep]             = useState(STEP.PERMISSION)
+  const [permStatus, setPermStatus] = useState('idle')   // idle | granted | denied | error
+  const [lang, setLang]             = useState(null)
+  const [isListening, setListening] = useState(false)
+  const [interim, setInterim]       = useState('')
+  const [lines, setLines]           = useState([])       // [{text, lang, ts}]
+  const [srError, setSrError]       = useState('')
+
+  const recognitionRef = useRef(null)
+  const isSupported    = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window
+
+  /* ── Step 1: request mic permission ── */
+  async function requestPermission() {
+    setPermStatus('idle')
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+      setPermStatus('granted')
+      setTimeout(() => setStep(STEP.LANGUAGE), 600)
+    } catch (err) {
+      setPermStatus(err.name === 'NotAllowedError' ? 'denied' : 'error')
+    }
+  }
+
+  /* ── Step 3: start recording ── */
+  const startListening = useCallback(() => {
+    if (!isSupported) { setSrError('Web Speech API not supported — use Chrome.'); return }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    const r  = new SR()
+    r.lang            = lang
+    r.interimResults  = true
+    r.maxAlternatives = 1
+    r.continuous      = true   // keep mic open until user stops
+
+    r.onstart  = () => { setListening(true); setInterim(''); setSrError('') }
+    r.onresult = (e) => {
+      let live  = ''
+      let final = ''
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript
+        e.results[i].isFinal ? (final += t) : (live += t)
+      }
+      setInterim(live)
+      if (final) {
+        setLines(prev => [...prev, { text: final.trim(), lang, ts: Date.now() }])
+        setInterim('')
+        if (step !== STEP.TRANSCRIPT) setStep(STEP.TRANSCRIPT)
+      }
+    }
+    r.onerror = (e) => { setSrError(`Error: ${e.error}`); setListening(false) }
+    r.onend   = ()  => { setListening(false); setInterim('') }
+
+    recognitionRef.current = r
+    r.start()
+  }, [lang, isSupported, step])
+
+  const stopListening = () => recognitionRef.current?.stop()
+
+  const clearAll = () => {
+    stopListening()
+    setLines([])
+    setInterim('')
+    setSrError('')
+    setStep(STEP.RECORD)
+  }
+
+  /* ── render helpers ── */
+  const stepIndex   = [STEP.PERMISSION, STEP.LANGUAGE, STEP.RECORD, STEP.TRANSCRIPT].indexOf(step)
+  const chosenLang  = LANGS.find(l => l.code === lang)
+
+  return (
+    <div className="sp-root">
+
+      {/* ── Header ── */}
+      <header className="sp-header">
+        <div className="sp-logo"><i className="bi bi-mic-fill" /></div>
+        <div>
+          <h1 className="sp-title">SpeakLog</h1>
+          <p className="sp-sub">Speech → Exact Transcript</p>
+        </div>
+      </header>
+
+      <main className="sp-main">
+
+        {/* ── Pipeline stepper ── */}
+        <div className="sp-stepper" role="list">
+          {['Mic Permission', 'Language', 'Record', 'Transcript'].map((label, i) => (
+            <div
+              key={label}
+              className={`sp-step ${i < stepIndex ? 'done' : i === stepIndex ? 'active' : 'pending'}`}
+              role="listitem"
+              aria-current={i === stepIndex ? 'step' : undefined}
+            >
+              <div className="sp-step-dot">
+                {i < stepIndex
+                  ? <i className="bi bi-check-lg" />
+                  : <span>{i + 1}</span>}
+              </div>
+              <span className="sp-step-label">{label}</span>
+              {i < 3 && <div className={`sp-step-line ${i < stepIndex ? 'done' : ''}`} />}
+            </div>
+          ))}
+        </div>
+
+        {/* ─────────────────────────────────────
+            STEP 1 — Microphone Permission
+        ───────────────────────────────────── */}
+        {step === STEP.PERMISSION && (
+          <section className="sp-card fade-up" aria-labelledby="perm-heading">
+            <div className="sp-card-icon perm">
+              <i className="bi bi-mic" />
+            </div>
+            <h2 id="perm-heading">Allow microphone access</h2>
+            <p className="sp-card-desc">
+              SpeakLog needs your microphone to convert speech to text.<br />
+              Your audio is processed locally in the browser — nothing is sent to a server.
+            </p>
+
+            {permStatus === 'denied' && (
+              <div className="sp-alert danger">
+                <i className="bi bi-x-circle me-2" />
+                Permission denied. Click the 🔒 icon in Chrome's address bar and allow microphone, then try again.
+              </div>
+            )}
+            {permStatus === 'error' && (
+              <div className="sp-alert danger">
+                <i className="bi bi-exclamation-triangle me-2" />
+                Could not access microphone. Check your browser settings.
+              </div>
+            )}
+            {permStatus === 'granted' && (
+              <div className="sp-alert success">
+                <i className="bi bi-check-circle me-2" />
+                Microphone access granted!
+              </div>
+            )}
+
+            <button
+              id="btn-allow-mic"
+              className="sp-btn primary"
+              onClick={requestPermission}
+              disabled={permStatus === 'granted'}
+            >
+              <i className="bi bi-mic-fill me-2" />
+              {permStatus === 'granted' ? 'Access granted ✓' : 'Allow microphone'}
+            </button>
+          </section>
+        )}
+
+        {/* ─────────────────────────────────────
+            STEP 2 — Language Selection
+        ───────────────────────────────────── */}
+        {step === STEP.LANGUAGE && (
+          <section className="sp-card fade-up" aria-labelledby="lang-heading">
+            <div className="sp-card-icon lang">
+              <i className="bi bi-translate" />
+            </div>
+            <h2 id="lang-heading">Choose your language</h2>
+            <p className="sp-card-desc">
+              Pick the language you'll speak in. You can switch later from the recording screen.
+            </p>
+
+            <div className="sp-lang-grid">
+              {LANGS.map(l => (
+                <button
+                  key={l.code}
+                  id={`lang-btn-${l.code}`}
+                  className={`sp-lang-card ${lang === l.code ? 'selected' : ''}`}
+                  onClick={() => setLang(l.code)}
+                  aria-pressed={lang === l.code}
+                >
+                  <span className="sp-lang-native">{l.native}</span>
+                  <span className="sp-lang-english">{l.english}</span>
+                  <span className="sp-lang-code">{l.code}</span>
+                  {lang === l.code && (
+                    <span className="sp-lang-check"><i className="bi bi-check-circle-fill" /></span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <button
+              id="btn-start-recording"
+              className="sp-btn primary"
+              disabled={!lang}
+              onClick={() => setStep(STEP.RECORD)}
+            >
+              Continue
+              <i className="bi bi-arrow-right ms-2" />
+            </button>
+          </section>
+        )}
+
+        {/* ─────────────────────────────────────
+            STEP 3 — Record
+        ───────────────────────────────────── */}
+        {(step === STEP.RECORD || step === STEP.TRANSCRIPT) && (
+          <section className="sp-card fade-up sp-record-card" aria-labelledby="record-heading">
+
+            {/* Top row */}
+            <div className="sp-record-top">
+              <div>
+                <h2 id="record-heading" className="mb-0">
+                  {step === STEP.TRANSCRIPT ? 'Transcript' : 'Ready to record'}
+                </h2>
+                <p className="sp-card-desc mb-0">
+                  {isListening
+                    ? 'Listening… speak now. Press Stop when done.'
+                    : step === STEP.TRANSCRIPT
+                      ? 'Tap the mic to record more.'
+                      : 'Tap the mic button to start speaking.'}
+                </p>
+              </div>
+
+              {/* Language switcher (re-pick without going back) */}
+              <div className="sp-lang-toggle">
+                {LANGS.map(l => (
+                  <button
+                    key={l.code}
+                    id={`toggle-${l.code}`}
+                    className={`sp-toggle-btn ${lang === l.code ? 'active' : ''}`}
+                    onClick={() => { stopListening(); setLang(l.code) }}
+                    title={`Switch to ${l.english}`}
+                  >
+                    {l.native}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {srError && (
+              <div className="sp-alert danger">
+                <i className="bi bi-bug me-2" />{srError}
+              </div>
+            )}
+
+            {!isSupported && (
+              <div className="sp-alert warning">
+                <i className="bi bi-exclamation-triangle me-2" />
+                Web Speech API not available — please use <strong>Google Chrome</strong>.
+              </div>
+            )}
+
+            {/* Mic button */}
+            <div className="sp-mic-area">
+              <button
+                id="mic-toggle-btn"
+                className={`sp-mic-btn ${isListening ? 'active' : ''}`}
+                onClick={isListening ? stopListening : startListening}
+                disabled={!isSupported}
+                aria-label={isListening ? 'Stop recording' : 'Start recording'}
+              >
+                <i className={`bi ${isListening ? 'bi-stop-fill' : 'bi-mic-fill'}`} />
+              </button>
+
+              {isListening
+                ? <div className="sp-waveform" aria-hidden="true">
+                    <span/><span/><span/><span/><span/><span/><span/>
+                  </div>
+                : <p className="sp-mic-hint">
+                    {isSupported ? 'Tap to speak' : 'Not available'}
+                  </p>
+              }
+            </div>
+
+            {/* Live interim */}
+            {interim && (
+              <div className="sp-interim" aria-live="polite" aria-label="Live speech">
+                <span className="sp-interim-label">Live</span>
+                {interim}
+              </div>
+            )}
+
+            {/* ─── TRANSCRIPT ─── */}
+            {lines.length > 0 && (
+              <div className="sp-transcript-block">
+                <div className="sp-transcript-header">
+                  <span className="sp-transcript-title">
+                    <i className="bi bi-card-text me-2" />
+                    Exact Transcript
+                  </span>
+                  <span className="sp-verbatim-badge">verbatim</span>
+                  <button
+                    id="btn-clear"
+                    className="sp-clear-btn ms-auto"
+                    onClick={clearAll}
+                    title="Clear transcript and record again"
+                  >
+                    <i className="bi bi-trash3 me-1" />Clear
+                  </button>
+                </div>
+
+                <div
+                  className="sp-transcript-lines"
+                  id="transcript-output"
+                  aria-live="polite"
+                  aria-label="Speech transcript"
+                >
+                  {lines.map((line, i) => (
+                    <div key={line.ts} className="sp-line fade-up">
+                      <span className="sp-line-num">{i + 1}</span>
+                      <span className="sp-line-lang">{line.lang}</span>
+                      <span className="sp-line-text">{line.text}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="sp-transcript-footer">
+                  <i className="bi bi-info-circle me-1" />
+                  These are your exact words — nothing has been edited or summarised.
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+      </main>
+    </div>
+  )
+}

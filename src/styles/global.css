@@ -1,0 +1,86 @@
+/* =========================================================
+   Global Styles — SpeakLog Voice Agent
+   ========================================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Tamil:wght@400;500;600&display=swap');
+
+:root {
+  --color-bg:        #0d1117;
+  --color-surface:   #161b22;
+  --color-surface-2: #1f2937;
+  --color-border:    #30363d;
+  --color-accent:    #6366f1;
+  --color-accent-2:  #8b5cf6;
+  --color-success:   #22c55e;
+  --color-warning:   #f59e0b;
+  --color-danger:    #ef4444;
+  --color-text:      #e6edf3;
+  --color-muted:     #8b949e;
+  --radius:          12px;
+  --radius-lg:       20px;
+  --transition:      0.25s ease;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', 'Noto Sans Tamil', sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+
+.app-root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--color-surface); }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+/* ── Pulse animation for active mic ── */
+@keyframes pulse-ring {
+  0%   { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(99,102,241,0.7); }
+  70%  { transform: scale(1);    box-shadow: 0 0 0 16px rgba(99,102,241,0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0  rgba(99,102,241,0); }
+}
+
+.pulse { animation: pulse-ring 1.5s ease infinite; }
+
+/* ── Waveform bars ── */
+@keyframes wave {
+  0%, 100% { height: 6px;  }
+  50%       { height: 28px; }
+}
+
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+}
+
+.waveform span {
+  display: inline-block;
+  width: 4px;
+  height: 6px;
+  background: var(--color-accent);
+  border-radius: 2px;
+  animation: wave 1s ease-in-out infinite;
+}
+
+.waveform span:nth-child(2) { animation-delay: 0.1s; }
+.waveform span:nth-child(3) { animation-delay: 0.2s; }
+.waveform span:nth-child(4) { animation-delay: 0.3s; }
+.waveform span:nth-child(5) { animation-delay: 0.4s; }
+
+/* ── Fade in ── */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in-up { animation: fadeInUp 0.35s ease forwards; }
