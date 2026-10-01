@@ -63,22 +63,24 @@ This build log captures the technical journey: what we attempted, what failed in
 
 #### 2. What Broke
 - **Stale Callback Hijacking**: If the student tapped the screen, cancelled speech, or if a timer fired while an utterance was queued, `speechSynthesis.onend` would still fire later and restart the mic at an inappropriate time or replay a previous question.
-- **Garbled Tamil Pronunciation**: Default browser voices in Windows often fallback to English TTS engines when reading Tamil script, resulting in unintelligible robotic sound.
-- **Overlapping Audio**: The agent would start speaking before the user's microphone had cleanly stopped, causing the microphone to pick up the agent's own speech and transcribe it as the student's answer!
+- **The V8 Garbage-Collection Bug (Silent Cutoff)**: In Chrome, creating `const u = new SpeechSynthesisUtterance(text)` inside a function without a persistent reference causes V8's garbage collector to sweep the object mid-utterance, resulting in audio abruptly cutting off or `onend` never firing!
+- **Missing Windows Tamil Voice Silent Failure**: On Windows without the optional Tamil language pack installed, requesting `lang = 'ta-IN'` with no voice assigned caused Chrome to silently fail with `language-unavailable` error and make zero sound.
+- **Micro-Chunk Chaining Freeze**: Splitting short sentences into sentence chunks caused `u.onend` to chain-call `speak()` outside a direct user gesture, causing Chrome to block subsequent chunks.
+- **Internal Paused State**: Chrome's synthesis engine occasionally gets stuck in `paused = true` after cancellation.
 
 #### 3. What We Decided & Why
 - **TTS Generation Counter (`ttsGenerationRef`)**:
   - Incremented on every speech start, cancel, or state transition.
-  - `onend` callback checks:
-    ```javascript
-    if (thisGen !== ttsGenerationRef.current) return; // Stale callback dropped
-    ```
-- **Strict Half-Duplex Audio Separation**:
-  - Explicitly call `stopListening()` *before* agent speaks.
-  - Add a 150ms acoustic buffer before opening the microphone after the agent finishes speaking.
-- **Bilingual Voice Filtering & Neural Selection**:
-  - Queried `window.speechSynthesis.getVoices()` for voices matching `lang.startsWith('ta')` or containing `"Tamil"` / `"ta-IN"`.
-  - Tuned the speech rate to `0.92 - 0.95` for natural, cadence-accurate Tamil enunciation.
+  - Dropped stale callbacks (`thisGen !== ttsGenerationRef.current`).
+- **V8 GC Protection (`activeUtterancesRef`)**:
+  - Stored `u` in a `Set` ref (`activeUtterancesRef.current.add(u)`) until `onend` or `onerror` fires, ensuring the garbage collector cannot collect it mid-speech.
+- **Resilient Fallback Voice Selection**:
+  - If a native Tamil voice (`ta-IN`) is not present in Windows, it falls back to an Indian English or system default voice rather than failing silently, ensuring audible prompts on all machines.
+- **Synchronous Pre-caching & Direct Delivery**:
+  - Preloaded voices on component mount (`cachedVoicesRef`) so `speak()` is called synchronously within the click gesture window.
+  - Eliminated unnecessary micro-chunking for questions, delivering the prompt as a single reliable utterance.
+- **Auto-Unpause (`window.speechSynthesis.resume()`)**:
+  - Automatically unpauses the browser's speech synthesis engine before every playback.
 
 ---
 
