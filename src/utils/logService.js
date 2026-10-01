@@ -8,7 +8,7 @@ const STORAGE_KEY = 'speaklog_saved_entries'
 /**
  * Saves the student's log verbatim and returns confirmation details.
  */
-export async function saveLog({ tried = '', broke = '', why = '', language = 'en-IN' }) {
+export async function saveLog({ tried = '', broke = '', why = '', language = 'en-IN', analysis = null }) {
   const entry = {
     id: `LOG-${Date.now().toString(36).toUpperCase()}`,
     language,
@@ -16,6 +16,7 @@ export async function saveLog({ tried = '', broke = '', why = '', language = 'en
     tried,
     broke,
     why,
+    analysis,
     createdAt: new Date().toISOString(),
   }
 
@@ -31,6 +32,19 @@ export async function saveLog({ tried = '', broke = '', why = '', language = 'en
   await new Promise(resolve => setTimeout(resolve, 350))
 
   return { ok: true, id: entry.id, entry }
+}
+
+/**
+ * Updates an existing log with AI analysis results.
+ */
+export function updateLogAnalysis(id, analysis) {
+  try {
+    const existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
+    const updated = existing.map(item => item.id === id ? { ...item, analysis } : item)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated))
+  } catch (err) {
+    console.warn('[logService] Could not update log analysis:', err)
+  }
 }
 
 /**

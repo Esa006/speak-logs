@@ -1,0 +1,9 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/follow-up", "destination": "/api/follow-up.js" },
+    { "source": "/api/analyze", "destination": "/api/analyze.js" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}

@@ -3,7 +3,8 @@ import 'bootstrap/dist/css/bootstrap.min.css'
 import 'bootstrap-icons/font/bootstrap-icons.css'
 import './SpeakLog.css'
 import { requestFollowUp, getStoredApiKey, setStoredApiKey } from '../../utils/aiFollowUp'
-import { saveLog } from '../../utils/logService'
+import { requestAnalysis } from '../../utils/aiAnalysis'
+import { saveLog, updateLogAnalysis } from '../../utils/logService'
 import { isConfirmation, isCancellation } from '../../utils/conversationFlow'
 
 /* ─────────────────────────────────────────────
@@ -81,6 +82,11 @@ export default function SpeakLog() {
   // Log save status
   const [savedResult, setSavedResult]     = useState(null)
   const [saveError, setSaveError]         = useState('')
+
+  // AI Session Analysis states
+  const [analysis, setAnalysis]           = useState(null)
+  const [isAnalyzing, setIsAnalyzing]     = useState(false)
+  const [analysisError, setAnalysisError] = useState('')
 
   // OpenAI Key settings modal
   const [apiKey, setApiKey]               = useState(() => getStoredApiKey())
@@ -380,6 +386,32 @@ export default function SpeakLog() {
     }
   }, [questions, lang, agentSpeak, startListening])
 
+  /* ── Generate AI Session Analysis ── */
+  const runAnalysis = useCallback(async (currentLog, logId) => {
+    setIsAnalyzing(true)
+    setAnalysisError('')
+    try {
+      const res = await requestAnalysis({
+        log: currentLog,
+        language: lang,
+        customApiKey: apiKey,
+      })
+      if (res && res.success) {
+        setAnalysis(res)
+        if (logId) {
+          updateLogAnalysis(logId, res)
+        }
+      } else {
+        setAnalysisError(res?.error || 'Unable to generate analysis')
+      }
+    } catch (err) {
+      console.error('Analysis error:', err)
+      setAnalysisError(err.message || 'Analysis failed')
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }, [lang, apiKey])
+
   /* ── Save Log Locally ── */
   const triggerSaveLog = useCallback(async () => {
     setPhase('saving')
@@ -403,6 +435,9 @@ export default function SpeakLog() {
       setStep(STEPS.DONE)
       setPhase('done')
 
+      // Trigger AI Analysis in parallel
+      runAnalysis(currentLog, result.id)
+
       const successMsg = lang === 'ta-IN'
         ? 'உங்கள் log வெற்றிகரமாக save செய்யப்பட்டது!'
         : 'Awesome! Your log has been saved.'
@@ -412,7 +447,7 @@ export default function SpeakLog() {
       setSaveError(err.message || 'Failed to save log')
       setPhase('confirming')
     }
-  }, [lang, agentSpeak])
+  }, [lang, agentSpeak, runAnalysis])
 
   useEffect(() => {
     answerRef.current = handleStudentAnswer
@@ -473,6 +508,9 @@ export default function SpeakLog() {
     setFollowUpSource('')
     setSavedResult(null)
     setSaveError('')
+    setAnalysis(null)
+    setIsAnalyzing(false)
+    setAnalysisError('')
     setLog({
       tried: '',
       triedFollowUp: '',
@@ -678,6 +716,128 @@ export default function SpeakLog() {
               <div className="sl-save-id">Log ID: {savedResult.id}</div>
             </div>
           )}
+
+          {/* AI Mentor Analysis Box */}
+          {savedResult && (
+            <div className="sl-analysis-box">
+              <div className="sl-analysis-header">
+                <div className="sl-analysis-title">
+                  <i className="bi bi-robot text-primary" />
+                  <span>AI Mentor Analysis</span>
+                </div>
+                <div className="d-flex align-items-center gap-2">
+                  <span className={`sl-analysis-badge ${analysis?.source === 'openai' ? 'openai' : ''}`}>
+                    {analysis?.source === 'openai' ? 'GPT-4o-mini' : 'Smart Heuristic'}
+                  </span>
+                  <button
+                    className="sl-icon-btn"
+                    style={{ width: '28px', height: '28px', fontSize: '0.8rem' }}
+                    onClick={() => runAnalysis(log, savedResult.id)}
+                    title="Re-analyze"
+                    disabled={isAnalyzing}
+                  >
+                    <i className={`bi bi-arrow-clockwise ${isAnalyzing ? 'sl-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              {isAnalyzing ? (
+                <div className="sl-analysis-loading">
+                  <i className="bi bi-gear-wide-connected sl-spin text-primary" style={{ fontSize: '1.6rem' }} />
+                  <span>Analyzing your engineering log with AI…</span>
+                </div>
+              ) : analysis ? (
+                <div>
+                  {analysis.momentum && (
+                    <div className="sl-analysis-momentum-tag">
+                      <i className="bi bi-lightning-charge-fill text-warning" />
+                      <span><strong>Momentum:</strong> {analysis.momentum}</span>
+                    </div>
+                  )}
+
+                  <div className="sl-analysis-section">
+                    <div className="sl-analysis-sec-title">
+                      <i className="bi bi-journal-text" /> Today's Focus
+                    </div>
+                    <p className="sl-analysis-sec-content">{analysis.summary}</p>
+                  </div>
+
+                  {analysis.blockerAnalysis && analysis.blockerAnalysis !== 'N/A' && (
+                    <div className="sl-analysis-section">
+                      <div className="sl-analysis-sec-title">
+                        <i className="bi bi-bug" /> Blocker & Root Cause
+                      </div>
+                      <p className="sl-analysis-sec-content blocker">{analysis.blockerAnalysis}</p>
+                    </div>
+                  )}
+
+                  {analysis.keyLearnings && analysis.keyLearnings !== 'N/A' && (
+                    <div className="sl-analysis-section">
+                      <div className="sl-analysis-sec-title">
+                        <i className="bi bi-lightbulb" /> Key Takeaway
+                      </div>
+                      <p className="sl-analysis-sec-content">{analysis.keyLearnings}</p>
+                    </div>
+                  )}
+
+                  {Array.isArray(analysis.nextSteps) && analysis.nextSteps.length > 0 && (
+                    <div className="sl-analysis-section">
+                      <div className="sl-analysis-sec-title">
+                        <i className="bi bi-check2-circle" /> Recommended Next Steps
+                      </div>
+                      <ul className="sl-analysis-steps">
+                        {analysis.nextSteps.map((s, idx) => (
+                          <li key={idx} className="sl-analysis-step-item">
+                            <i className="bi bi-arrow-right-short" />
+                            <span>{s}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {Array.isArray(analysis.tags) && analysis.tags.length > 0 && (
+                    <div className="sl-analysis-section">
+                      <div className="sl-analysis-sec-title">
+                        <i className="bi bi-tags" /> Skill & Tech Tags
+                      </div>
+                      <div className="sl-analysis-tags-wrap">
+                        {analysis.tags.map((tag, idx) => (
+                          <span key={idx} className="sl-analysis-tag">#{tag}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {analysis.feedback && (
+                    <div className="sl-analysis-feedback">
+                      "{analysis.feedback}"
+                    </div>
+                  )}
+                </div>
+              ) : analysisError ? (
+                <div className="sl-error">
+                  <i className="bi bi-exclamation-triangle me-2" />
+                  {analysisError}
+                  <div className="mt-2">
+                    <button
+                      className="sl-analysis-btn"
+                      onClick={() => runAnalysis(log, savedResult.id)}
+                    >
+                      Try Again
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  className="sl-analysis-btn"
+                  onClick={() => runAnalysis(log, savedResult.id)}
+                >
+                  <i className="bi bi-stars" /> Generate AI Insights
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ══════════ MIC AREA ══════════ */}
@@ -822,8 +982,8 @@ export default function SpeakLog() {
               <i className="bi bi-robot text-primary" /> OpenAI API Settings
             </div>
             <p className="sl-modal-sub">
-              Enter your <code>OPENAI_API_KEY</code> to enable live GPT-4o-mini follow-up questions.
-              If omitted, SpeakLog will use its smart context-aware fallback questions automatically.
+              Enter your <code>OPENAI_API_KEY</code> to enable live GPT-4o-mini follow-up questions and intelligent post-session engineering analysis reports.
+              If omitted, SpeakLog will use its smart context-aware fallback questions and heuristic insights automatically.
             </p>
             <input
               type="password"

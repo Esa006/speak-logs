@@ -19,6 +19,8 @@ Built with **React**, **Vite**, **Bootstrap 5**, the browser **Web Speech API**,
 - **Dynamic AI Follow-up**:
   - After each answer, the agent asks **exactly one follow-up question** powered by OpenAI's `gpt-4o-mini` via `/api/follow-up`.
   - Built-in contextual fallback when running offline or without an API key.
+- **AI Session Analysis & Insights**:
+  - Automatically synthesizes the daily session into technical learnings, blocker diagnostics, recommended next steps, and tech tags via `/api/analyze` using `gpt-4o-mini`.
 - **Verbatim Log Preservation**:
   - The student's exact spoken words are captured directly without summarization or rephrasing.
 - **Voice Confirmation & Local Save**:
@@ -80,6 +82,27 @@ Open **[http://localhost:5173](http://localhost:5173)** in Google Chrome (requir
 ```bash
 npm run build
 ```
+
+---
+
+## 🚀 Deployment
+
+### Option 1: Deploy to Vercel (Recommended)
+SpeakLog is pre-configured with [`vercel.json`](file:///c:/Users/Admin/Downloads/SpeakLog/vercel.json) and serverless API endpoints in [`api/`](file:///c:/Users/Admin/Downloads/SpeakLog/api):
+
+1. Push your code to your GitHub repository:
+   ```bash
+   git add .
+   git commit -m "feat: ready for deployment"
+   git push origin main
+   ```
+2. Log in to [vercel.com](https://vercel.com) and click **"Add New Project"**.
+3. Import `Esa006/speak-logs`.
+4. In **Environment Variables**, add:
+   - `OPENAI_API_KEY`: `your_openai_api_key`
+5. Click **Deploy**. Vercel will provide an **HTTPS** URL (required for Chrome Web Speech API).
+
+*(Students and users can also input their own OpenAI key via the UI settings modal if an environment key is not provided).*
 
 ---
 

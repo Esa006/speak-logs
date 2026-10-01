@@ -744,3 +744,201 @@ body {
   gap: .5rem;
 }
 
+/* ══════════════════════════════════════
+   AI Analysis Card
+══════════════════════════════════════ */
+.sl-analysis-box {
+  margin-top: 1rem;
+  background: linear-gradient(145deg, rgba(30, 39, 61, 0.75), rgba(18, 23, 38, 0.95));
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: var(--r);
+  padding: 1.25rem;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  animation: slFadeUp 0.3s ease-out;
+}
+
+@keyframes slFadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.sl-analysis-box::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #6366f1, #a855f7, #ec4899);
+}
+
+.sl-analysis-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.9rem;
+}
+
+.sl-analysis-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.sl-analysis-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 20px;
+  background: rgba(99, 102, 241, 0.18);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  color: #a5b4fc;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.sl-analysis-badge.openai {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+}
+
+.sl-analysis-momentum-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.73rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-2);
+  margin-bottom: 0.8rem;
+  font-weight: 500;
+}
+
+.sl-analysis-section {
+  margin-bottom: 0.85rem;
+}
+
+.sl-analysis-sec-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-2);
+  margin-bottom: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.sl-analysis-sec-content {
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.sl-analysis-sec-content.blocker {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.08);
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  border-left: 3px solid #ef4444;
+}
+
+.sl-analysis-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.sl-analysis-step-item {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--text-2);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.sl-analysis-step-item i {
+  color: #38bdf8;
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+}
+
+.sl-analysis-tags-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
+}
+
+.sl-analysis-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: #c4b5fd;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+}
+
+.sl-analysis-feedback {
+  background: rgba(99, 102, 241, 0.09);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.8rem;
+  font-style: italic;
+  color: #e0e7ff;
+  border-left: 3px solid var(--accent);
+  margin-top: 0.7rem;
+}
+
+.sl-analysis-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 0;
+  gap: 0.75rem;
+  color: var(--muted-2);
+  font-size: 0.85rem;
+}
+
+.sl-analysis-btn {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: opacity var(--ease), transform var(--ease);
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+
+.sl-analysis-btn:hover {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
+
+.sl-analysis-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+
