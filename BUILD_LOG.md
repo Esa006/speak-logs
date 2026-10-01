@@ -32,21 +32,22 @@ This build log captures the technical journey: what we attempted, what failed in
 - Appended results directly to state on every `onresult` event.
 
 #### 2. What Broke
-- **The "Interim Duplication" Bug**: The user observed transcripts repeating words endlessly:  
-  `"today today today today... today I am working... chat app..."`  
-  *Root Cause*: Chrome's Web Speech API fires `onresult` multiple times per utterance. The interim results change and refine the prefix continuously. Appending `event.results[i][0].transcript` without distinguishing `isFinal` from `interim` results in duplicate chunks being concatenated into the transcript buffer over and over.
+- **The "Interim Duplication & Boundary Overlap" Bug**: Transcripts repeating words like `"todaytoday today today create chat app"`.  
+  *Root Cause*: Chrome's streaming ASR engine often repeats the trailing 500ms audio buffer across consecutive segments, emitting multiple results where chunk `n+1` re-states the words from chunk `n`, or glue words together without spaces (`"todaytoday"`).
 - **Microphone State De-sync**: The UI would display `"Ready"` while the user was actively speaking into the mic.
 - **Abrupt Cutoffs**: A fixed 10-second timeout regularly cut students off mid-sentence while they were gathering their thoughts or describing complex bugs.
 - **Instance Collision**: When state changed or user tapped the mic, multiple `SpeechRecognition` instances ran concurrently, throwing `InvalidStateError: recognition has already started`.
 
 #### 3. What We Decided & Why
 - **Extracted a Dedicated Hook (`useVoicePipeline.js`)**: Decoupled voice I/O completely from UI state.
-- **Dual-Buffer Transcript Architecture**:
-  - `finalTranscript`: Accumulates confirmed text when `event.results[i].isFinal` is true.
-  - `interimTranscript`: Replaces (never appends) the active in-progress text on every tick, rendering smoothly and zeroing out on finalization.
+- **Boundary Overlap-Aware Merger (`mergeWithOverlap`)**:
+  - Dynamically detects when a new speech chunk overlaps with the end of previous chunks (up to 8 words), merging smoothly at the seam without repeating words.
+- **Consecutive Duplicate Filter (`removeConsecutiveDuplicates`)**:
+  - Detects and repairs stuck-together doubled words (e.g. `"todaytoday"` → `"today"`).
+  - Collapses accidental consecutive word repetitions (e.g. `"today today today today"` → `"today"`).
 - **Silence Debounce Algorithm (Voice Activity Detection)**:
-  - Instead of an arbitrary 10-second timer, we listen continuously and reset a silence timer (2.5 seconds) on every incoming speech chunk.
-  - Only when the user pauses for 2.5s of genuine silence does the pipeline trigger `finishListening()` and emit ONE finalized utterance.
+  - Instead of an arbitrary 10-second timer, we listen continuously and reset a silence timer (3.0 seconds) on every incoming speech chunk.
+  - Only when the user pauses for genuine silence does the pipeline trigger `finishListening()` and emit ONE finalized utterance.
 - **Stale Instance Guard**:
   ```javascript
   if (recognitionRef.current !== r) return;
