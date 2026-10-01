@@ -129,12 +129,15 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
   const [srError,    setSrError]     = useState('')
 
   /* ── Internal refs ── */
-  const recognitionRef     = useRef(null)  // current SR instance
-  const lastTranscriptRef  = useRef('')    // duplicate-answer guard
-  const ttsGenerationRef   = useRef(0)     // TTS stale-callback guard
-  const activeUtterancesRef = useRef(new Set()) // V8 GC protection
-  const cachedVoicesRef    = useRef([])
-  const langRef            = useRef(lang)
+  const recognitionRef       = useRef(null)   // current SR instance
+  const recognitionRunningRef = useRef(false)  // guard: recognition is starting/running
+  const isSpeakingRef         = useRef(false)  // guard: TTS is currently speaking
+  const spokenResponseIdRef   = useRef(null)   // guard: unique response ID already spoken
+  const lastTranscriptRef    = useRef('')     // duplicate-answer guard
+  const ttsGenerationRef     = useRef(0)      // TTS stale-callback guard
+  const activeUtterancesRef  = useRef(new Set()) // V8 GC protection
+  const cachedVoicesRef      = useRef([])
+  const langRef              = useRef(lang)
   langRef.current = lang
 
   // Pre-load and cache voices on mount so they are available synchronously
@@ -168,6 +171,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
      stopListening  (public)
      ────────────────────────────────────────────────────────────────────── */
   const stopListening = useCallback(() => {
+    recognitionRunningRef.current = false
     try { recognitionRef.current?.stop() } catch {}
   }, [])
 
@@ -183,6 +187,19 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       onError?.(msg)
       return
     }
+
+    // Guard: Never start recognition while TTS is actively speaking
+    if (isSpeakingRef.current) {
+      console.log('[Speech] start blocked: TTS is currently speaking')
+      return
+    }
+
+    // Guard: Prevent double invocation if recognition is already running
+    if (recognitionRunningRef.current) {
+      console.log('[Speech] start blocked: recognition is already running')
+      return
+    }
+
     setSrError('')
     window.speechSynthesis?.cancel()
     setAgentText('')
@@ -212,6 +229,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       clearSilenceTimer()
       if (recognitionRef.current !== r) return   // stale-instance guard
       stoppedManually = true
+      recognitionRunningRef.current = false
       try { r.stop() } catch {}
 
       const text = removeConsecutiveDuplicates(capturedTranscript).trim()
@@ -221,11 +239,12 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       }
 
       if (lastTranscriptRef.current === text) {
-        console.log('[VoicePipeline] Duplicate transcript ignored:', text)
+        console.log('[Speech] duplicate prevented:', text)
         setVoiceState(VOICE_STATE.LISTENING)
         return
       }
       lastTranscriptRef.current = text
+      console.log('[Speech] final transcript:', text)
       setVoiceState(VOICE_STATE.PROCESSING)
       onTranscript?.(text)
     }
@@ -243,12 +262,16 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
     /* ── Event handlers ── */
     r.onstart = () => {
       if (recognitionRef.current !== r) return
+      recognitionRunningRef.current = true
+      console.log('[Speech] recognition started')
       setVoiceState(VOICE_STATE.LISTENING)
       setInterim('')
     }
 
     r.onresult = (e) => {
       if (recognitionRef.current !== r) return
+      // Strict half-duplex: ignore any microphone input if AI is speaking
+      if (isSpeakingRef.current) return
 
       let finals = ''
       let live = ''
@@ -274,10 +297,10 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       capturedTranscript = cleanFull
       hasSpeech = !!cleanFull
 
+      console.log('[Speech] interim transcript:', cleanFull)
       setInterim(cleanFull)
 
       // CRITICAL: Schedule silence timer whenever speech is heard.
-      // Guarantees finishListening fires even if Chrome hasn't finalized last chunk.
       if (hasSpeech) {
         resetSilenceTimer()
       }
@@ -289,6 +312,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       if (e.error === 'no-speech') return
 
       clearSilenceTimer()
+      recognitionRunningRef.current = false
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         const msg = langRef.current === 'ta-IN'
           ? 'தயவுசெய்து உங்கள் உலாவியில் மைக்ரோஃபோன் அணுகலை அனுமதிக்கவும்.'
@@ -304,6 +328,8 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
     r.onend = () => {
       if (recognitionRef.current !== r) return
       clearSilenceTimer()
+      recognitionRunningRef.current = false
+      console.log('[Speech] recognition ended')
 
       // If finished cleanly via debounce, stop here
       if (stoppedManually) {
@@ -316,6 +342,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       if (text) {
         stoppedManually = true
         lastTranscriptRef.current = text
+        console.log('[Speech] final transcript (onend):', text)
         setInterim('')
         setVoiceState(VOICE_STATE.PROCESSING)
         onTranscript?.(text)
@@ -323,32 +350,56 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       }
 
       // If Chrome closed due to silence timeout while still in LISTENING,
-      // start a fresh recognition instance with clean buffers
-      try {
-        setTimeout(() => startListening(), 50)
-      } catch {
+      // start a fresh recognition instance if AI is NOT speaking
+      if (!isSpeakingRef.current) {
+        console.log('[Speech] restart: session active, restarting clean recognition')
+        setTimeout(() => {
+          if (!isSpeakingRef.current) startListening()
+        }, 80)
+      } else {
         setVoiceState(VOICE_STATE.IDLE)
       }
     }
 
     // Register BEFORE .start() so all callbacks see correct current instance.
     recognitionRef.current = r
-    try { r.start() } catch (err) {
-      console.warn('[VoicePipeline] start error:', err)
+    try {
+      r.start()
+    } catch (err) {
+      console.warn('[Speech] start error:', err)
+      recognitionRunningRef.current = false
     }
   }, [isSupported, onTranscript, onError, setVoiceState])
 
   /* ──────────────────────────────────────────────────────────────────────
      agentSpeak  (public)
      ────────────────────────────────────────────────────────────────────── */
-  const agentSpeak = useCallback((text, onDone) => {
+  const agentSpeak = useCallback((input, onDone) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       onDone?.()
       return
     }
 
+    const text = typeof input === 'string' ? input : input?.text || ''
+    const responseId = typeof input === 'object' ? input?.id : null
+
+    // Guard: Prevent speaking the same response ID multiple times
+    if (responseId) {
+      if (spokenResponseIdRef.current === responseId) {
+        console.log('[TTS] duplicate prevented for ID:', responseId)
+        return
+      }
+      spokenResponseIdRef.current = responseId
+    }
+
+    console.log('[TTS] speaking response ID:', responseId || 'ad-hoc', text)
+
     ttsGenerationRef.current += 1
     const myGeneration = ttsGenerationRef.current
+
+    // Strict Half-Duplex: stop microphone recognition immediately before AI speaks
+    isSpeakingRef.current = true
+    stopListening()
 
     // Cancel any ongoing speech and ensure synthesis is unpaused
     window.speechSynthesis.cancel()
@@ -409,7 +460,11 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
         activeUtterancesRef.current.delete(u)
         if (ttsGenerationRef.current === myGeneration) {
           setAgentText('')
-          onDone?.()
+          // Acoustic buffer: wait 200ms before allowing mic so speaker echo doesn't trigger mic
+          setTimeout(() => {
+            isSpeakingRef.current = false
+            onDone?.()
+          }, 200)
         }
       }
 
@@ -440,13 +495,14 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
         doSpeak()
       }
     }
-  }, [setVoiceState])
+  }, [setVoiceState, stopListening])
 
   /* ──────────────────────────────────────────────────────────────────────
      cancelSpeech  (public — user taps mic while agent is speaking)
      ────────────────────────────────────────────────────────────────────── */
   const cancelSpeech = useCallback(() => {
     ttsGenerationRef.current += 1   // invalidate current TTS generation
+    isSpeakingRef.current = false
     activeUtterancesRef.current.clear()
     window.speechSynthesis?.cancel()
     setAgentText('')

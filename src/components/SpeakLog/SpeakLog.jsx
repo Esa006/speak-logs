@@ -66,12 +66,14 @@ export default function SpeakLog() {
   const [analysisError, setAnalysisError] = useState('')
 
   /* ── Stable refs for timer/callback closures ── */
-  const convPhaseRef  = useRef(convPhase)
-  const logRef        = useRef(log)
-  const langRef       = useRef(lang)
-  const timerRef      = useRef(null)
-  const agentSpeakRef = useRef(null)  // always-current agentSpeak for timer
-  const saveLogRef    = useRef(null)  // always-current save for CONFIRM voice
+  const convPhaseRef        = useRef(convPhase)
+  const logRef              = useRef(log)
+  const langRef             = useRef(lang)
+  const timerRef            = useRef(null)
+  const agentSpeakRef       = useRef(null)  // always-current agentSpeak for timer
+  const saveLogRef          = useRef(null)  // always-current save for CONFIRM voice
+  const processingAnswerRef = useRef(false) // Guard 3: Processing lock for OpenAI
+  const requestIdRef        = useRef(0)     // Guard 10: Stale async request protector
 
   useEffect(() => {
     convPhaseRef.current = convPhase
@@ -141,23 +143,23 @@ export default function SpeakLog() {
         if (t <= 1) {
           clearInterval(timerRef.current)
           try { stopListening() } catch {}
-          setConvPhase(prev => {
-            if (prev !== PHASES.DONE && prev !== PHASES.CONFIRM) {
-              const msg = langRef.current === 'ta-IN'
-                ? 'இரண்டு நிமிடங்கள் முடிந்தது! உங்கள் log தயாராக உள்ளது. இதை save செய்யவா?'
-                : 'Two minutes are up! Here is your daily log. Review your responses below.'
-              agentSpeakRef.current?.(msg)
-              return PHASES.CONFIRM
-            }
-            return prev
-          })
+          if (convPhaseRef.current !== PHASES.DONE && convPhaseRef.current !== PHASES.CONFIRM) {
+            setConvPhase(PHASES.CONFIRM)
+            const msg = langRef.current === 'ta-IN'
+              ? 'இரண்டு நிமிடங்கள் முடிந்தது! உங்கள் log தயாராக உள்ளது. இதை Proof-ல் post செய்யவா?'
+              : 'Two minutes are up! Here is your daily log on Proof. Say "yes, post it" to confirm.'
+            agentSpeakRef.current?.({ text: msg, id: 'timeout_confirm' }, () => {
+              setConfirming()
+              startListening()
+            })
+          }
           return 0
         }
         return t - 1
       })
     }, 1000)
     return () => clearInterval(timerRef.current)
-  }, [timerOn, stopListening])
+  }, [timerOn, stopListening, setConfirming, startListening])
 
   /* ── Finish Log Button ── */
   const handleFinishLog = useCallback(() => {
@@ -165,9 +167,9 @@ export default function SpeakLog() {
     cancelSpeech()
     setConvPhase(PHASES.CONFIRM)
     const prompt = lang === 'ta-IN'
-      ? 'உங்கள் log தயாராக உள்ளது. இதை save செய்ய Submit Log அழுத்தவும் அல்லது "yes, save it" என்று சொல்லவும்.'
-      : 'Here is your daily log. Review your responses below and tap Submit Log to confirm.'
-    agentSpeak(prompt, () => {
+      ? 'உங்கள் log தயாராக உள்ளது. இதை Proof-ல் post செய்ய "yes, post it" அல்லது "சரி போஸ்ட் பண்ணு" என்று சொல்லவும்.'
+      : 'Here is your daily log on Proof. Say "yes, post it" to confirm, or click Post to Proof.'
+    agentSpeak({ text: prompt, id: `finish_${Date.now()}` }, () => {
       setConfirming()
       startListening()
     })
@@ -196,7 +198,8 @@ export default function SpeakLog() {
   const triggerSaveLog = useCallback(async () => {
     setIsSaving(true)
     setSaveError('')
-    agentSpeak(lang === 'ta-IN' ? 'அருமை! உங்கள் log-ஐ save செய்கிறேன்…' : 'Saving your log now…')
+    const saveMsg = lang === 'ta-IN' ? 'அருமை! உங்கள் log-ஐ Proof-ல் save செய்கிறேன்…' : 'Saving your log to Proof now…'
+    agentSpeak({ text: saveMsg, id: 'saving_now' })
     try {
       const current = logRef.current
       const result  = await saveLog({
@@ -211,7 +214,7 @@ export default function SpeakLog() {
       setSavedResult(result)
       setConvPhase(PHASES.DONE)
       runAnalysis(current, result.id)
-      agentSpeak(QUESTIONS[lang][PHASES.DONE])
+      agentSpeak({ text: QUESTIONS[lang][PHASES.DONE], id: `done_${result.id}` })
     } catch (err) {
       console.error('Save error:', err)
       setSaveError(err.message || 'Failed to save log')
@@ -250,89 +253,169 @@ export default function SpeakLog() {
      Receives ONE finalized transcript per utterance from useVoicePipeline.
      ────────────────────────────────────────────────────────────────────── */
   const handleStudentAnswer = useCallback(async (text) => {
+    if (!text || !text.trim()) return
+
+    // Guard 3: Processing lock to prevent duplicate OpenAI requests
+    if (processingAnswerRef.current) {
+      console.log('[AI] duplicate answer processing prevented for:', text)
+      return
+    }
+    processingAnswerRef.current = true
+
     const currentPhase = convPhaseRef.current
     setLines(prev => [...prev, { text, ts: Date.now() }])
 
-    if (currentPhase === PHASES.WHAT_TRIED) {
-      setLog(l => ({ ...l, tried: text }))
-      setConvPhase(PHASES.FOLLOWUP_1)
-      const res = await requestFollowUp({
-        transcript: text,
-        question:   QUESTIONS[lang][PHASES.WHAT_TRIED],
-        language:   lang,
-        phase:      PHASES.WHAT_TRIED,
-      })
-      setFollowUpQ1(res.followUp)
-      agentSpeak(res.followUp, () => startListening())
-      return
-    }
+    try {
+      if (currentPhase === PHASES.WHAT_TRIED) {
+        setLog(l => ({ ...l, tried: text }))
+        setConvPhase(PHASES.FOLLOWUP_1)
 
-    if (currentPhase === PHASES.FOLLOWUP_1) {
-      setLog(l => ({ ...l, triedFollowUp: text }))
-      setConvPhase(PHASES.WHAT_BROKE)
-      agentSpeak(QUESTIONS[lang][PHASES.WHAT_BROKE], () => startListening())
-      return
-    }
+        const thisReq = ++requestIdRef.current
+        console.log('[AI] request started for WHAT_TRIED, reqId:', thisReq)
 
-    if (currentPhase === PHASES.WHAT_BROKE) {
-      setLog(l => ({ ...l, broke: text }))
-      setConvPhase(PHASES.FOLLOWUP_2)
-      const res = await requestFollowUp({
-        transcript: text,
-        question:   QUESTIONS[lang][PHASES.WHAT_BROKE],
-        language:   lang,
-        phase:      PHASES.WHAT_BROKE,
-      })
-      setFollowUpQ2(res.followUp)
-      agentSpeak(res.followUp, () => startListening())
-      return
-    }
+        const res = await requestFollowUp({
+          transcript: text,
+          question:   QUESTIONS[lang][PHASES.WHAT_TRIED],
+          language:   lang,
+          phase:      PHASES.WHAT_TRIED,
+        })
 
-    if (currentPhase === PHASES.FOLLOWUP_2) {
-      setLog(l => ({ ...l, brokeFollowUp: text }))
-      setConvPhase(PHASES.WHY)
-      agentSpeak(QUESTIONS[lang][PHASES.WHY], () => startListening())
-      return
-    }
+        // Guard 10: Stale async response protection
+        if (thisReq !== requestIdRef.current) {
+          console.log('[AI] stale async response discarded:', thisReq)
+          return
+        }
+        console.log('[AI] request completed for WHAT_TRIED:', res.followUp)
 
-    if (currentPhase === PHASES.WHY) {
-      setLog(l => ({ ...l, why: text }))
-      setConvPhase(PHASES.FOLLOWUP_3)
-      const res = await requestFollowUp({
-        transcript: text,
-        question:   QUESTIONS[lang][PHASES.WHY],
-        language:   lang,
-        phase:      PHASES.WHY,
-      })
-      setFollowUpQ3(res.followUp)
-      agentSpeak(res.followUp, () => startListening())
-      return
-    }
-
-    if (currentPhase === PHASES.FOLLOWUP_3) {
-      setLog(l => ({ ...l, whyFollowUp: text }))
-      setConvPhase(PHASES.CONFIRM)
-      agentSpeak(QUESTIONS[lang][PHASES.CONFIRM], () => {
-        setConfirming()
-        startListening()
-      })
-      return
-    }
-
-    if (currentPhase === PHASES.CONFIRM) {
-      if (isConfirmation(text)) {
-        saveLogRef.current?.()
-      } else if (isCancellation(text)) {
-        const msg = lang === 'ta-IN'
-          ? 'சரி, log ரத்து செய்யப்பட்டது. நீங்கள் எப்போது வேண்டுமானாலும் மீண்டும் தொடங்கலாம்.'
-          : 'Understood. Log cancelled. You can start a new log anytime.'
-        agentSpeak(msg)
-      } else {
-        const retry = lang === 'ta-IN'
-          ? `புரியவில்லை. இதை Proof-ல் post செய்ய 'yes, post it' அல்லது 'சரி போஸ்ட் பண்ணு' என்று சொல்லவும்.`
-          : `I didn't quite catch that. Say "yes, post it" to confirm, or click Post to Proof.`
-        agentSpeak(retry, () => { setConfirming(); startListening() })
+        setFollowUpQ1(res.followUp)
+        const respId = `q1_${Date.now()}`
+        agentSpeak({ text: res.followUp, id: respId }, () => {
+          processingAnswerRef.current = false
+          startListening()
+        })
+        return
       }
+
+      if (currentPhase === PHASES.FOLLOWUP_1) {
+        setLog(l => ({ ...l, triedFollowUp: text }))
+        setConvPhase(PHASES.WHAT_BROKE)
+
+        const respId = `q_broke_${Date.now()}`
+        agentSpeak({ text: QUESTIONS[lang][PHASES.WHAT_BROKE], id: respId }, () => {
+          processingAnswerRef.current = false
+          startListening()
+        })
+        return
+      }
+
+      if (currentPhase === PHASES.WHAT_BROKE) {
+        setLog(l => ({ ...l, broke: text }))
+        setConvPhase(PHASES.FOLLOWUP_2)
+
+        const thisReq = ++requestIdRef.current
+        console.log('[AI] request started for WHAT_BROKE, reqId:', thisReq)
+
+        const res = await requestFollowUp({
+          transcript: text,
+          question:   QUESTIONS[lang][PHASES.WHAT_BROKE],
+          language:   lang,
+          phase:      PHASES.WHAT_BROKE,
+        })
+
+        if (thisReq !== requestIdRef.current) {
+          console.log('[AI] stale async response discarded:', thisReq)
+          return
+        }
+        console.log('[AI] request completed for WHAT_BROKE:', res.followUp)
+
+        setFollowUpQ2(res.followUp)
+        const respId = `q2_${Date.now()}`
+        agentSpeak({ text: res.followUp, id: respId }, () => {
+          processingAnswerRef.current = false
+          startListening()
+        })
+        return
+      }
+
+      if (currentPhase === PHASES.FOLLOWUP_2) {
+        setLog(l => ({ ...l, brokeFollowUp: text }))
+        setConvPhase(PHASES.WHY)
+
+        const respId = `q_why_${Date.now()}`
+        agentSpeak({ text: QUESTIONS[lang][PHASES.WHY], id: respId }, () => {
+          processingAnswerRef.current = false
+          startListening()
+        })
+        return
+      }
+
+      if (currentPhase === PHASES.WHY) {
+        setLog(l => ({ ...l, why: text }))
+        setConvPhase(PHASES.FOLLOWUP_3)
+
+        const thisReq = ++requestIdRef.current
+        console.log('[AI] request started for WHY, reqId:', thisReq)
+
+        const res = await requestFollowUp({
+          transcript: text,
+          question:   QUESTIONS[lang][PHASES.WHY],
+          language:   lang,
+          phase:      PHASES.WHY,
+        })
+
+        if (thisReq !== requestIdRef.current) {
+          console.log('[AI] stale async response discarded:', thisReq)
+          return
+        }
+        console.log('[AI] request completed for WHY:', res.followUp)
+
+        setFollowUpQ3(res.followUp)
+        const respId = `q3_${Date.now()}`
+        agentSpeak({ text: res.followUp, id: respId }, () => {
+          processingAnswerRef.current = false
+          startListening()
+        })
+        return
+      }
+
+      if (currentPhase === PHASES.FOLLOWUP_3) {
+        setLog(l => ({ ...l, whyFollowUp: text }))
+        setConvPhase(PHASES.CONFIRM)
+
+        const respId = `confirm_${Date.now()}`
+        agentSpeak({ text: QUESTIONS[lang][PHASES.CONFIRM], id: respId }, () => {
+          processingAnswerRef.current = false
+          setConfirming()
+          startListening()
+        })
+        return
+      }
+
+      if (currentPhase === PHASES.CONFIRM) {
+        if (isConfirmation(text)) {
+          saveLogRef.current?.()
+          processingAnswerRef.current = false
+        } else if (isCancellation(text)) {
+          const msg = lang === 'ta-IN'
+            ? 'சரி, log ரத்து செய்யப்பட்டது. நீங்கள் எப்போது வேண்டுமானாலும் மீண்டும் தொடங்கலாம்.'
+            : 'Understood. Log cancelled. You can start a new log anytime.'
+          agentSpeak({ text: msg, id: `cancel_${Date.now()}` }, () => {
+            processingAnswerRef.current = false
+          })
+        } else {
+          const retry = lang === 'ta-IN'
+            ? `புரியவில்லை. இதை Proof-ல் post செய்ய 'yes, post it' அல்லது 'சரி போஸ்ட் பண்ணு' என்று சொல்லவும்.`
+            : `I didn't quite catch that. Say "yes, post it" to confirm, or click Post to Proof.`
+          agentSpeak({ text: retry, id: `retry_${Date.now()}` }, () => {
+            processingAnswerRef.current = false
+            setConfirming()
+            startListening()
+          })
+        }
+      }
+    } catch (err) {
+      console.error('[SpeakLog] handleStudentAnswer error:', err)
+      processingAnswerRef.current = false
     }
   }, [lang, agentSpeak, startListening, setConfirming])
 
@@ -354,7 +437,8 @@ export default function SpeakLog() {
     }
     if (convPhase === PHASES.INTRO || !timerOn) {
       setTimerOn(true)
-      agentSpeak(QUESTIONS[lang][PHASES.INTRO], () => {
+      const introId = `intro_${Date.now()}`
+      agentSpeak({ text: QUESTIONS[lang][PHASES.INTRO], id: introId }, () => {
         setConvPhase(PHASES.WHAT_TRIED)
         startListening()
       })
@@ -369,6 +453,8 @@ export default function SpeakLog() {
     stopListening()
     clearInterval(timerRef.current)
     resetDuplicateGuard()
+    processingAnswerRef.current = false
+    requestIdRef.current += 1
 
     setConvPhase(PHASES.INTRO)
     setTimeLeft(TOTAL_SECONDS)
