@@ -23,11 +23,17 @@ export default function SpeechPipeline() {
   const [permStatus, setPermStatus] = useState('idle')   // idle | granted | denied | error
   const [lang, setLang]             = useState(null)
   const [isListening, setListening] = useState(false)
+  const [listenStatus, setListenStatus] = useState('Ready')   // Ready | Listening… | Hearing you… | Processing…
   const [interim, setInterim]       = useState('')
   const [lines, setLines]           = useState([])       // [{text, lang, ts}]
   const [srError, setSrError]       = useState('')
 
-  const recognitionRef = useRef(null)
+  const recognitionRef    = useRef(null)
+  // Two separate buffers — the KEY fix:
+  //   finalTranscript  → accumulates confirmed text (never reset mid-session)
+  //   interimTranscript → always REPLACED by latest Chrome revision (never appended)
+  const finalBufRef       = useRef('')
+  const sessionActiveRef  = useRef(false)  // auto-restart guard
   const isSupported    = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window
 
   /* ── Step 1: request mic permission ── */
@@ -45,36 +51,130 @@ export default function SpeechPipeline() {
   /* ── Step 3: start recording ── */
   const startListening = useCallback(() => {
     if (!isSupported) { setSrError('Web Speech API not supported — use Chrome.'); return }
+
+    // Reset the final buffer for this new recording session
+    finalBufRef.current  = ''
+    sessionActiveRef.current = true
+
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
     const r  = new SR()
     r.lang            = lang
     r.interimResults  = true
     r.maxAlternatives = 1
-    r.continuous      = true   // keep mic open until user stops
+    r.continuous      = true   // We control stopping — not the browser
 
-    r.onstart  = () => { setListening(true); setInterim(''); setSrError('') }
+    // ── onstart: mic is now open ────────────────────────────────────────
+    r.onstart = () => {
+      setListening(true)
+      setInterim('')
+      setSrError('')
+      setListenStatus('Listening…')
+    }
+
+    // ── onspeechstart: voice detected ───────────────────────────────────
+    r.onspeechstart = () => {
+      setListenStatus('Hearing you…')
+    }
+
+    // ── onspeechend: voice stopped — processing ──────────────────────────
+    r.onspeechend = () => {
+      setListenStatus('Processing…')
+    }
+
+    // ── onresult: THE CRITICAL FIX ───────────────────────────────────────
+    // Chrome sends rolling REVISIONS of the same interim result:
+    //   Event 1: "today"           (interim, resultIndex=0)
+    //   Event 2: "today I am"      (interim, resultIndex=0 — REVISION)
+    //   Event 3: "today I am work" (interim, resultIndex=0 — REVISION)
+    // 
+    // WRONG approach: live += transcript  →  "today today I am today I am work"
+    // RIGHT approach: live  = transcript  →  always shows latest version only
+    //
+    // For finals: accumulate into finalBufRef (one continuous string)
+    // For interim: build fresh `live` string — REPLACE, never append
     r.onresult = (e) => {
-      let live  = ''
-      let final = ''
+      // Build fresh interim from the CURRENT event only (resultIndex onwards)
+      let live = ''
+
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const t = e.results[i][0].transcript
-        e.results[i].isFinal ? (final += t) : (live += t)
+        if (!t.trim()) continue
+
+        if (e.results[i].isFinal) {
+          // Confirmed text: append to the session's final buffer
+          finalBufRef.current += (finalBufRef.current ? ' ' : '') + t.trim()
+        } else {
+          // Interim revision: BUILD FRESH — do not append to previous interim
+          live += t
+        }
       }
-      setInterim(live)
-      if (final) {
-        setLines(prev => [...prev, { text: final.trim(), lang, ts: Date.now() }])
-        setInterim('')
-        if (step !== STEP.TRANSCRIPT) setStep(STEP.TRANSCRIPT)
+
+      // Display: finalized text + current interim (replaced, not appended)
+      const display = (finalBufRef.current ? finalBufRef.current + ' ' : '') + live
+      setInterim(display || '')
+
+      if (step !== STEP.TRANSCRIPT && finalBufRef.current) {
+        setStep(STEP.TRANSCRIPT)
       }
     }
-    r.onerror = (e) => { setSrError(`Error: ${e.error}`); setListening(false) }
-    r.onend   = ()  => { setListening(false); setInterim('') }
+
+    r.onerror = (e) => {
+      if (e.error === 'no-speech') return   // normal — just keep waiting
+      setSrError(`Error: ${e.error}`)
+      setListening(false)
+      setListenStatus('Ready')
+    }
+
+    // ── onend: browser stopped recognition ──────────────────────────────
+    // IMPORTANT: onend ≠ "user finished speaking"
+    // Chrome fires onend for many reasons (network hiccup, timeout, etc.)
+    // Strategy:
+    //   • If user manually stopped (sessionActiveRef=false) → go idle
+    //   • Otherwise auto-restart so the session stays alive
+    r.onend = () => {
+      setListening(false)
+      setListenStatus('Ready')
+      setInterim('')
+
+      if (sessionActiveRef.current) {
+        // Auto-restart: give Chrome 150ms to release resources
+        setTimeout(() => {
+          if (!sessionActiveRef.current) return  // user stopped in the meantime
+          try {
+            const r2 = new SR()
+            r2.lang            = lang
+            r2.interimResults  = true
+            r2.maxAlternatives = 1
+            r2.continuous      = true
+            // Re-attach same handlers by starting again via startListening
+            // (simpler: just call start() on a fresh instance)
+            // We use a minimal restart to avoid re-running all the setup
+            recognitionRef.current?.start()
+          } catch {
+            // Already starting or mic unavailable — safe to ignore
+          }
+        }, 150)
+      }
+    }
 
     recognitionRef.current = r
     r.start()
   }, [lang, isSupported, step])
 
-  const stopListening = () => recognitionRef.current?.stop()
+  const stopListening = useCallback(() => {
+    sessionActiveRef.current = false   // prevent auto-restart
+    try { recognitionRef.current?.stop() } catch {}
+    setListening(false)
+    setListenStatus('Ready')
+    // Finalize: push accumulated transcript as one line
+    const accumulated = finalBufRef.current.trim()
+    if (accumulated) {
+      setLines(prev => [...prev, { text: accumulated, lang, ts: Date.now() }])
+      finalBufRef.current = ''
+      setInterim('')
+      if (step !== STEP.TRANSCRIPT) setStep(STEP.TRANSCRIPT)
+    }
+  }, [lang, step])
 
   const clearAll = () => {
     stopListening()

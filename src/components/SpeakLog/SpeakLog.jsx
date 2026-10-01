@@ -329,8 +329,8 @@ export default function SpeakLog() {
         agentSpeak(msg)
       } else {
         const retry = lang === 'ta-IN'
-          ? `புரியவில்லை. இதை save செய்ய 'yes, save it' அல்லது 'சரி சேவ் பண்ணு' என்று சொல்லவும்.`
-          : `I didn't quite catch that. Say "yes, save it" to confirm, or click Submit Log.`
+          ? `புரியவில்லை. இதை Proof-ல் post செய்ய 'yes, post it' அல்லது 'சரி போஸ்ட் பண்ணு' என்று சொல்லவும்.`
+          : `I didn't quite catch that. Say "yes, post it" to confirm, or click Post to Proof.`
         agentSpeak(retry, () => { setConfirming(); startListening() })
       }
     }
@@ -661,11 +661,16 @@ export default function SpeakLog() {
 
               {convPhase === PHASES.CONFIRM && (
                 <div className="sl-confirm-actions">
+                  <div className="w-100 text-center mb-2 text-muted small">
+                    <i className="bi bi-mic me-1" />
+                    {lang === 'ta-IN' ? 'குரல் மூலம் உறுதிப்படுத்த "yes, post it" அல்லது "சரி போஸ்ட் பண்ணு" என்று கூறவும்' : 'Speak "yes, post it" to confirm by voice'}
+                  </div>
                   <button id="btn-cancel-log" className="sl-cancel-btn" onClick={handleReset} disabled={isSaving}>
-                    <i className="bi bi-x-circle me-1" />Cancel
+                    <i className="bi bi-x-circle me-1" />{lang === 'ta-IN' ? 'ரத்து செய்' : 'Cancel'}
                   </button>
                   <button id="btn-save-log" className="sl-save-btn" onClick={triggerSaveLog} disabled={isSaving}>
-                    <i className="bi bi-cloud-arrow-up-fill me-1" />{isSaving ? 'Saving...' : 'Save Log'}
+                    <i className="bi bi-cloud-arrow-up-fill me-1" />
+                    {isSaving ? (lang === 'ta-IN' ? 'போஸ்ட் செய்கிறது...' : 'Posting...') : (lang === 'ta-IN' ? 'Proof-ல் Post செய்' : 'Post to Proof')}
                   </button>
                 </div>
               )}

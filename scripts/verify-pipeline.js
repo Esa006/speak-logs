@@ -109,9 +109,11 @@ async function runProof() {
   // 7. Student Voice Confirmation
   console.log('--- STAGE 7: Student Confirmation Detection ---')
   const testPhrases = [
+    { text: 'yes, post it', expected: true },
     { text: 'yes, save it', expected: true },
     { text: 'save log', expected: true },
     { text: 'submit', expected: true },
+    { text: 'சரி போஸ்ட் பண்ணு', expected: true },
     { text: 'சரி சேவ் பண்ணு', expected: true },
     { text: 'ஆம்', expected: true },
     { text: 'no', expected: false },

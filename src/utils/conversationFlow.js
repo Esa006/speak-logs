@@ -19,20 +19,20 @@ export const PHASES = {
 
 export const QUESTIONS = {
   'en-IN': {
-    [PHASES.INTRO]: "Hi! Welcome to SpeakLog. Let's do a quick two-minute check-in on your work today. To start — what did you work on today?",
-    [PHASES.WHAT_TRIED]: "What did you work on today?",
-    [PHASES.WHAT_BROKE]: "Got it! Now — what broke, gave an error, or didn't work the way you expected?",
-    [PHASES.WHY]: "Understood. And why do you think that happened?",
-    [PHASES.CONFIRM]: "Here is your log in your own words. Should I save this log? Say 'yes, save it' to confirm, or click Save Log.",
-    [PHASES.DONE]: "Awesome! Your log has been saved.",
+    [PHASES.INTRO]: "Hi! Welcome to SpeakLog. Let's do a quick two-minute check-in on your day. To start — what did you try?",
+    [PHASES.WHAT_TRIED]: "What did you try?",
+    [PHASES.WHAT_BROKE]: "What broke?",
+    [PHASES.WHY]: "Why did that happen?",
+    [PHASES.CONFIRM]: "Here is your log in your own words. Ready to post it to Proof? Say 'yes, post it' to confirm.",
+    [PHASES.DONE]: "Awesome! Your log has been posted to Proof.",
   },
   'ta-IN': {
-    [PHASES.INTRO]: "வணக்கம்! SpeakLog-க்கு வரவேற்கிறோம். இன்று நீங்கள் செய்த பணிகளைப் பற்றி ஒரு 2 நிமிடம் பேசலாம். முதலில் — இன்று என்ன work பண்ணினீர்கள் அல்லது என்ன try பண்ணினீர்கள்?",
-    [PHASES.WHAT_TRIED]: "நீங்கள் இன்று என்ன work பண்ணினீர்கள் அல்லது என்ன try பண்ணினீர்கள்?",
-    [PHASES.WHAT_BROKE]: "சரி. அடுத்ததாக — என்ன சரியாக வரவில்லை, என்ன error அல்லது என்ன பிரச்சனை வந்தது?",
-    [PHASES.WHY]: "புரிகிறது. ஏன் அப்படி நடந்தது என்று நினைக்கிறீர்கள்?",
-    [PHASES.CONFIRM]: "உங்கள் log உங்கள் சொந்த வார்த்தைகளில் திரையில் தயாராக உள்ளது. இதை save செய்யவா? உறுதிப்படுத்த 'yes, save it' அல்லது 'சரி சேவ் பண்ணு' என்று சொல்லவும்.",
-    [PHASES.DONE]: "அருமை! உங்கள் log வெற்றிகரமாக save செய்யப்பட்டது.",
+    [PHASES.INTRO]: "வணக்கம்! SpeakLog-க்கு வரவேற்கிறோம். இன்று உங்கள் நாள் பற்றி 2 நிமிடம் பேசலாம். முதலில் — இன்று என்ன try பண்ணினீர்கள்?",
+    [PHASES.WHAT_TRIED]: "இன்று என்ன try பண்ணினீர்கள்?",
+    [PHASES.WHAT_BROKE]: "என்ன broke ஆனது?",
+    [PHASES.WHY]: "ஏன் அப்படி நடந்தது?",
+    [PHASES.CONFIRM]: "உங்கள் log உங்கள் சொந்த வார்த்தைகளில் திரையில் தயாராக உள்ளது. இதை Proof-ல் post செய்யவா? 'yes, post it' அல்லது 'சரி போஸ்ட் பண்ணு' என்று சொல்லவும்.",
+    [PHASES.DONE]: "அருமை! உங்கள் log Proof-ல் வெற்றிகரமாக post செய்யப்பட்டது.",
   },
 }
 
@@ -108,9 +108,9 @@ export function formatLog({ tried, broke, why }) {
 export function isConfirmation(text = '') {
   const t = text.trim().toLowerCase()
   return (
-    /yes[,\s]*(save|post|submit|go|do it|it|please|sure)/i.test(t) ||
-    /^(yes|yeah|yep|sure|confirm|save|save it|post it|submit|submit it|save log|submit log|do it|okay|ok|looks good|perfect|correct)$/i.test(t) ||
-    /(ஆம்|சரி|சேவ்|போஸ்ட்|சப்மிட்|பண்ணு|செய்|ஆமா|ஆமாம்|சரிங்க|சேவ் பண்ணு|save பண்ணு)/i.test(t)
+    /yes[,\s]*(post|save|submit|go|do it|it|please|sure)/i.test(t) ||
+    /^(yes|yeah|yep|sure|confirm|post|post it|save|save it|submit|submit it|save log|submit log|post log|do it|okay|ok|looks good|perfect|correct)$/i.test(t) ||
+    /(ஆம்|சரி|சேவ்|போஸ்ட்|சப்மிட்|பண்ணு|செய்|ஆமா|ஆமாம்|சரிங்க|சேவ் பண்ணு|save பண்ணு|போஸ்ட் பண்ணு|post பண்ணு)/i.test(t)
   )
 }
 

@@ -1,8 +1,17 @@
 # SpeakLog (speak-logs)
 
-Bilingual voice agent that talks with an engineering student for around 2 minutes and saves their verbatim daily work log in their own words.
+Bilingual voice agent that talks with a student for around 2 minutes about their day and saves their answer as a log on Proof, in their own words.
 
-Built with **React**, **Vite**, **Bootstrap 5**, the browser **Web Speech API**, and **OpenAI API** (`gpt-4o-mini`).
+Built for **Vruksha Consultancy** (Chennai) hiring challenge.
+
+### 🎯 Key Requirements Met
+1. **Asks, in Tamil or English**: What did you try? What broke? Why?
+2. **Asks one follow-up** derived specifically from what they just answered.
+3. **Keeps their exact words**: 100% verbatim reflection — strictly zero summarising.
+4. **Posts only after they say "yes, post it"** (or click Post to Proof).
+5. **Deep Tamil Support**: Native `ta-IN` speech recognition, Tamil TTS voice synthesis, Tamil natural follow-ups, and colloquial affirmative matcher (`சரி போஸ்ட் பண்ணு`, `ஆம்`, `ஆமாம்`, `போஸ்ட் பண்ணு`).
+6. **Detailed Build Log**: Read [`BUILD_LOG.md`](./BUILD_LOG.md) for full records of what we tried, what broke, what we decided and why!
+
 
 ---
 
