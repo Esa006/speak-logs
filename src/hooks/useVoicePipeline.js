@@ -43,6 +43,74 @@ export const VOICE_STATE = {
    consider the user done speaking. Tune between 2500–4000 for Tamil. */
 const SILENCE_MS = 3000
 
+/**
+ * Merges two speech segments, detecting and eliminating word-level overlaps
+ * caused by Chrome's rolling ASR buffer (e.g. "today" + "today create" -> "today create").
+ */
+function mergeWithOverlap(str1, str2) {
+  const s1 = (str1 || '').trim()
+  const s2 = (str2 || '').trim()
+  if (!s1) return s2
+  if (!s2) return s1
+
+  if (s2.toLowerCase().startsWith(s1.toLowerCase())) {
+    return s2
+  }
+  if (s1.toLowerCase().endsWith(s2.toLowerCase())) {
+    return s1
+  }
+
+  const w1 = s1.split(/\s+/)
+  const w2 = s2.split(/\s+/)
+
+  // Check word-level overlap at the seam (up to 8 words)
+  const maxOverlap = Math.min(w1.length, w2.length, 8)
+  for (let overlap = maxOverlap; overlap > 0; overlap--) {
+    const s1Tail = w1.slice(w1.length - overlap).map(w => w.toLowerCase()).join(' ')
+    const s2Head = w2.slice(0, overlap).map(w => w.toLowerCase()).join(' ')
+    if (s1Tail === s2Head) {
+      return [...w1, ...w2.slice(overlap)].join(' ')
+    }
+  }
+
+  return s1 + ' ' + s2
+}
+
+/**
+ * Eliminates accidental word doublings like "todaytoday" and consecutive identical words
+ * like "today today today" caused by Chrome's interim revision re-emission.
+ */
+function removeConsecutiveDuplicates(str) {
+  if (!str) return ''
+  const words = str.trim().split(/\s+/)
+  const cleaned = []
+
+  for (let i = 0; i < words.length; i++) {
+    const raw = words[i].trim()
+    if (!raw) continue
+
+    // 1. Detect stuck-together duplicate words like "todaytoday" or "chatchat"
+    let word = raw
+    const len = raw.length
+    if (len >= 6 && len % 2 === 0) {
+      const half = raw.slice(0, len / 2)
+      if (raw.toLowerCase() === (half + half).toLowerCase()) {
+        word = half
+      }
+    }
+
+    // 2. Detect consecutive identical words
+    const prev = cleaned[cleaned.length - 1]
+    if (prev && prev.toLowerCase() === word.toLowerCase()) {
+      continue // Drop consecutive repeat
+    }
+
+    cleaned.push(word)
+  }
+
+  return cleaned.join(' ')
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    Hook
    ─────────────────────────────────────────────────────────────────────── */
@@ -146,7 +214,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       stoppedManually = true
       try { r.stop() } catch {}
 
-      const text = capturedTranscript.trim()
+      const text = removeConsecutiveDuplicates(capturedTranscript).trim()
       if (!text) {
         setVoiceState(VOICE_STATE.LISTENING)
         return
@@ -192,17 +260,21 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
         if (!t.trim()) continue
 
         if (item.isFinal) {
-          finals += (finals ? ' ' : '') + t.trim()
+          finals = mergeWithOverlap(finals, t.trim())
         } else {
-          live += t
+          live = mergeWithOverlap(live, t.trim())
         }
       }
 
-      const full = (finals + (finals && live ? ' ' : '') + live).trim()
-      capturedTranscript = full
-      hasSpeech = !!full
+      // Merge confirmed finals with active live interim
+      const rawFull = mergeWithOverlap(finals, live)
+      // Strip out any duplicate words or words glued together like "todaytoday"
+      const cleanFull = removeConsecutiveDuplicates(rawFull)
 
-      setInterim(full)
+      capturedTranscript = cleanFull
+      hasSpeech = !!cleanFull
+
+      setInterim(cleanFull)
 
       // CRITICAL: Schedule silence timer whenever speech is heard.
       // Guarantees finishListening fires even if Chrome hasn't finalized last chunk.
@@ -240,7 +312,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       }
 
       // If user had spoken, finalize what we captured
-      const text = capturedTranscript.trim()
+      const text = removeConsecutiveDuplicates(capturedTranscript).trim()
       if (text) {
         stoppedManually = true
         lastTranscriptRef.current = text
@@ -251,9 +323,9 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       }
 
       // If Chrome closed due to silence timeout while still in LISTENING,
-      // seamlessly keep the microphone alive
+      // start a fresh recognition instance with clean buffers
       try {
-        r.start()
+        setTimeout(() => startListening(), 50)
       } catch {
         setVoiceState(VOICE_STATE.IDLE)
       }
