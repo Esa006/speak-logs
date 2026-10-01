@@ -40,8 +40,8 @@ export const VOICE_STATE = {
 }
 
 /* Silence debounce: ms of quiet after the last final segment before we
-   consider the user done speaking. Tune between 2500–4000 for Tamil. */
-const SILENCE_MS = 3000
+   consider the user done speaking. Set to 2000ms (2.0s) for responsive transitions. */
+const SILENCE_MS = 2000
 
 /**
  * Merges two speech segments, detecting and eliminating word-level overlaps

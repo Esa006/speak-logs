@@ -654,9 +654,11 @@ export default function SpeakLog() {
                   </div>
                 )}
 
-                {voiceState === VOICE_STATE.LISTENING && lang === 'ta-IN' && (
+                {voiceState === VOICE_STATE.LISTENING && (
                   <span className="sl-mic-hint" style={{ color: '#fca5a5', fontSize: '0.76rem', marginTop: '0.25rem' }}>
-                    3 விநாடி அமைதி → தானாக நிறுத்தும் · ■ அழுத்தி உடனே நிறுத்தலாம்
+                    {lang === 'ta-IN'
+                      ? '2 விநாடி அமைதி → தானாக அடுத்த கேள்வி · ■ அழுத்தி உடனே முடிக்கலாம்'
+                      : '2s silence → auto-proceeds · Click ■ to finish now'}
                   </span>
                 )}
               </div>

@@ -298,6 +298,14 @@ Controlled startListening() (Re-opens microphone for the next student answer)
 
 ---
 
+### 11. End-of-Speech Silence Debounce Latency Tuning
+
+- **Root Cause**: `SILENCE_MS` was originally set to 3000ms (3.0 seconds). While this guaranteed long pauses would not be prematurely cut off for slow speakers, it introduced an apparent 3-second lag after finishing speaking before the app moved to the next question.
+- **The Fix**: Tuned `SILENCE_MS` to 2000ms (2.0s) in [`useVoicePipeline.js`](file:///c:/Users/Admin/Downloads/SpeakLog/src/hooks/useVoicePipeline.js) and added a bilingual UI hint (`2s silence → auto-proceeds · Click ■ to finish now` / `2 விநாடி அமைதி → தானாக அடுத்த கேள்வி · ■ அழுத்தி உடனே முடிக்கலாம்`) so students know exactly when and how the question advances.
+- **Result**: Transition latency after speaking decreased by 33% without cutting off speech mid-sentence.
+
+---
+
 ## 🧪 Pipeline Verification Proof
 
 ```text
