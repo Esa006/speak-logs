@@ -1,4 +1,4 @@
-﻿/**
+/**
  * useVoicePipeline
  *
  * A production-style voice pipeline for SpeakLog.
@@ -26,7 +26,7 @@
  *   5. TTS generation counter — stale TTS callbacks cannot trigger re-listening.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 /* ─────────────────────────────────────────────────────────────────────────
    Voice state machine
@@ -61,11 +61,29 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
   const [srError,    setSrError]     = useState('')
 
   /* ── Internal refs ── */
-  const recognitionRef    = useRef(null)  // current SR instance
-  const lastTranscriptRef = useRef('')    // duplicate-answer guard
-  const ttsGenerationRef  = useRef(0)    // TTS stale-callback guard
-  const langRef           = useRef(lang)
+  const recognitionRef     = useRef(null)  // current SR instance
+  const lastTranscriptRef  = useRef('')    // duplicate-answer guard
+  const ttsGenerationRef   = useRef(0)     // TTS stale-callback guard
+  const activeUtterancesRef = useRef(new Set()) // V8 GC protection
+  const cachedVoicesRef    = useRef([])
+  const langRef            = useRef(lang)
   langRef.current = lang
+
+  // Pre-load and cache voices on mount so they are available synchronously
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    const updateVoices = () => {
+      const v = window.speechSynthesis.getVoices()
+      if (v.length > 0) cachedVoicesRef.current = v
+    }
+    updateVoices()
+    window.speechSynthesis.onvoiceschanged = updateVoices
+    return () => {
+      if (window.speechSynthesis?.onvoiceschanged === updateVoices) {
+        window.speechSynthesis.onvoiceschanged = null
+      }
+    }
+  }, [])
 
   /* ── State setter that also notifies parent ── */
   const setVoiceState = useCallback((next) => {
@@ -230,63 +248,103 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
      agentSpeak  (public)
      ────────────────────────────────────────────────────────────────────── */
   const agentSpeak = useCallback((text, onDone) => {
-    if (!('speechSynthesis' in window)) { onDone?.(); return }
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      onDone?.()
+      return
+    }
 
     ttsGenerationRef.current += 1
     const myGeneration = ttsGenerationRef.current
 
+    // Cancel any ongoing speech and ensure synthesis is unpaused
     window.speechSynthesis.cancel()
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume()
+    }
+
     setAgentText(text)
     setVoiceState(VOICE_STATE.SPEAKING)
 
-    function splitIntoChunks(str, maxLen = 220) {
-      const sentences = str.match(/[^.!?।]+[.!?।]?/g) || [str]
-      const chunks = []; let cur = ''
-      for (const s of sentences) {
-        if ((cur + s).length > maxLen && cur) { chunks.push(cur.trim()); cur = s }
-        else cur += s
-      }
-      if (cur.trim()) chunks.push(cur.trim())
-      return chunks.length ? chunks : [str]
-    }
-
     function pickVoice(voices) {
-      const l = langRef.current
-      let v = voices.find(vx => vx.lang === l);              if (v) return v
-      v     = voices.find(vx => vx.lang.startsWith(l.split('-')[0])); if (v) return v
-      if (l.startsWith('ta')) { v = voices.find(vx => /tamil/i.test(vx.name)); if (v) return v }
-      return null
-    }
-
-    function speakChunks(chunks, voice) {
-      if (ttsGenerationRef.current !== myGeneration) return  // stale-generation guard
-      if (!chunks.length) { setAgentText(''); onDone?.(); return }
-      const [head, ...tail] = chunks
-      const u = new SpeechSynthesisUtterance(head)
-      u.lang  = langRef.current
-      u.rate  = langRef.current.startsWith('ta') ? 0.88 : 0.95
-      if (voice) u.voice = voice
-      u.onend   = () => speakChunks(tail, voice)
-      u.onerror = (err) => {
-        if (err.error === 'interrupted') return
-        console.warn('[VoicePipeline] TTS error:', err.error, head)
-        speakChunks(tail, voice)
+      const l = langRef.current || 'ta-IN'
+      // 1. Exact locale match (e.g. 'ta-IN' or 'en-IN')
+      let v = voices.find(vx => vx.lang === l)
+      if (v) return v
+      // 2. Language prefix match (e.g. 'ta' or 'en')
+      v = voices.find(vx => vx.lang.startsWith(l.split('-')[0]))
+      if (v) return v
+      // 3. Name contains language
+      if (l.startsWith('ta')) {
+        v = voices.find(vx => /tamil/i.test(vx.name))
+        if (v) return v
+        // 4. Fallback for Tamil on Windows: if no Tamil voice is installed,
+        // use an Indian English or Hindi voice so speech actually outputs
+        v = voices.find(vx => vx.lang === 'en-IN' || /india/i.test(vx.name))
+        if (v) return v
       }
-      window.speechSynthesis.speak(u)
-      // Chrome TTS keepalive
-      setTimeout(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume() }, 1000)
+      return voices.find(vx => vx.default) || voices[0] || null
     }
 
     function doSpeak() {
-      speakChunks(splitIntoChunks(text), pickVoice(window.speechSynthesis.getVoices()))
+      if (ttsGenerationRef.current !== myGeneration) return
+
+      const availableVoices = cachedVoicesRef.current.length > 0
+        ? cachedVoicesRef.current
+        : window.speechSynthesis.getVoices()
+
+      const voice = pickVoice(availableVoices)
+      const u = new SpeechSynthesisUtterance(text)
+
+      if (voice) {
+        u.voice = voice
+        u.lang = voice.lang || langRef.current
+      } else {
+        u.lang = langRef.current
+      }
+
+      u.rate = langRef.current.startsWith('ta') ? 0.92 : 0.95
+      u.pitch = 1
+
+      // Chrome GC bug fix: Keep a strong reference in Set until spoken
+      activeUtterancesRef.current.add(u)
+
+      let finished = false
+      const finalize = () => {
+        if (finished) return
+        finished = true
+        activeUtterancesRef.current.delete(u)
+        if (ttsGenerationRef.current === myGeneration) {
+          setAgentText('')
+          onDone?.()
+        }
+      }
+
+      u.onend = finalize
+      u.onerror = (err) => {
+        if (err.error !== 'interrupted') {
+          console.warn('[VoicePipeline] TTS notice:', err.error)
+        }
+        finalize()
+      }
+
+      window.speechSynthesis.speak(u)
+
+      // Chrome keep-alive & unpause check
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume()
+      }
     }
 
-    const voices = window.speechSynthesis.getVoices()
-    if (voices.length > 0) {
+    // Try speaking immediately. If voices not yet populated, do quick fallback
+    if (cachedVoicesRef.current.length > 0 || window.speechSynthesis.getVoices().length > 0) {
       doSpeak()
     } else {
-      window.speechSynthesis.onvoiceschanged = () => { window.speechSynthesis.onvoiceschanged = null; doSpeak() }
-      setTimeout(() => { window.speechSynthesis.onvoiceschanged = null; doSpeak() }, 1200)
+      const timer = setTimeout(doSpeak, 250)
+      window.speechSynthesis.onvoiceschanged = () => {
+        clearTimeout(timer)
+        cachedVoicesRef.current = window.speechSynthesis.getVoices()
+        doSpeak()
+      }
     }
   }, [setVoiceState])
 
@@ -295,6 +353,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
      ────────────────────────────────────────────────────────────────────── */
   const cancelSpeech = useCallback(() => {
     ttsGenerationRef.current += 1   // invalidate current TTS generation
+    activeUtterancesRef.current.clear()
     window.speechSynthesis?.cancel()
     setAgentText('')
     setVoiceState(VOICE_STATE.IDLE)
