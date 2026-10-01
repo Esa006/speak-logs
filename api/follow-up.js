@@ -9,10 +9,13 @@ export default async function handler(req, res) {
   }
 
   try {
-    const body = req.body || {}
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {})
     const result = await handleFollowUp({
-      ...body,
-      envApiKey: process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY,
+      transcript: body.transcript || '',
+      question: body.question || '',
+      language: body.language || 'en-IN',
+      phase: body.phase || 'WHAT_TRIED',
+      envApiKey: process.env.OPENAI_API_KEY,
     })
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')

@@ -2,59 +2,32 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import 'bootstrap/dist/css/bootstrap.min.css'
 import 'bootstrap-icons/font/bootstrap-icons.css'
 import './SpeakLog.css'
-import { requestFollowUp, getStoredApiKey, setStoredApiKey } from '../../utils/aiFollowUp'
+import {
+  PHASES,
+  QUESTIONS,
+  GREETINGS,
+  isConfirmation,
+  isCancellation,
+} from '../../utils/conversationFlow'
+import { requestFollowUp } from '../../utils/aiFollowUp'
 import { requestAnalysis } from '../../utils/aiAnalysis'
-import { saveLog, updateLogAnalysis } from '../../utils/logService'
-import { isConfirmation, isCancellation } from '../../utils/conversationFlow'
+import { saveLog, updateLogAnalysis, retryProofSubmission } from '../../utils/logService'
 
 /* ─────────────────────────────────────────────
-   Constants & Step Flow
+   Constants & Duration Formatting
 ───────────────────────────────────────────── */
-const TOTAL_SECONDS = 120 // 2-minute assignment duration
+const TOTAL_SECONDS = 120 // ~2-minute assignment duration
 
-// Flow Steps:
-// 0: Q1 (What tried) -> 1: Q1 Follow-up
-// 2: Q2 (What broke) -> 3: Q2 Follow-up
-// 4: Q3 (Why)        -> 5: Q3 Follow-up
-// 6: Confirmation    -> 7: Done/Saved
-const STEPS = {
-  Q1: 0,
-  Q1_FOLLOWUP: 1,
-  Q2: 2,
-  Q2_FOLLOWUP: 3,
-  Q3: 4,
-  Q3_FOLLOWUP: 5,
-  CONFIRM: 6,
-  DONE: 7,
-}
-
-const MAIN_QUESTIONS = {
-  'ta-IN': [
-    { q: 'நீங்கள் இன்று என்ன try பண்ணினீர்கள்?', en: 'What did you try today?' },
-    { q: 'என்ன சரியாக வரவில்லை அல்லது என்ன பிரச்சனை வந்தது?', en: "What broke or didn't work as expected?" },
-    { q: 'ஏன் அப்படி நடந்தது என்று நினைக்கிறீர்கள்?', en: 'Why do you think that happened?' },
-  ],
-  'en-IN': [
-    { q: 'What did you try today?', en: '' },
-    { q: "What broke or didn't work the way you expected?", en: '' },
-    { q: 'Why do you think that happened?', en: '' },
-  ],
-}
-
-const GREETINGS = {
-  'ta-IN': { main: 'வணக்கம்! உங்கள் நாளைப் பற்றி பேசலாம்', en: "👋 Let's talk about your day" },
-  'en-IN': { main: "👋 Let's talk about your day", en: '' },
-}
-
-function fmtTime(s) {
-  const m = String(Math.floor(s / 60)).padStart(2, '0')
-  const sec = String(s % 60).padStart(2, '0')
-  return `${m}:${sec}`
+function fmtTimerDisplay(s) {
+  const elapsed = Math.max(0, TOTAL_SECONDS - s)
+  const elM = String(Math.floor(elapsed / 60)).padStart(2, '0')
+  const elS = String(elapsed % 60).padStart(2, '0')
+  return `${elM}:${elS} / 02:00`
 }
 
 export default function SpeakLog() {
   const [lang, setLang]                   = useState('ta-IN')
-  const [step, setStep]                   = useState(STEPS.Q1)
+  const [convPhase, setConvPhase]         = useState(PHASES.INTRO)
   const [phase, setPhase]                 = useState('idle') // idle | speaking | listening | generating | confirming | saving | done
   const [timeLeft, setTimeLeft]           = useState(TOTAL_SECONDS)
   const [timerOn, setTimerOn]             = useState(false)
@@ -79,64 +52,43 @@ export default function SpeakLog() {
   const [followUpQ3, setFollowUpQ3]       = useState('')
   const [followUpSource, setFollowUpSource] = useState('')
 
-  // Log save status
+  // Log save & Proof submission status
   const [savedResult, setSavedResult]     = useState(null)
   const [saveError, setSaveError]         = useState('')
+  const [isRetryingProof, setIsRetryingProof] = useState(false)
 
   // AI Session Analysis states
   const [analysis, setAnalysis]           = useState(null)
   const [isAnalyzing, setIsAnalyzing]     = useState(false)
   const [analysisError, setAnalysisError] = useState('')
 
-  // OpenAI Key settings modal
-  const [apiKey, setApiKey]               = useState(() => getStoredApiKey())
-  const [showKeyModal, setShowKeyModal]   = useState(false)
-  const [tempKey, setTempKey]             = useState('')
-
   const recognitionRef = useRef(null)
   const synthRef       = useRef(null)
   const timerRef       = useRef(null)
-  const stepRef        = useRef(step)
+  const convPhaseRef   = useRef(convPhase)
   const logRef         = useRef(log)
   const phaseRef       = useRef(phase)
   const answerRef      = useRef(null)
   const saveLogRef     = useRef(null)
 
   useEffect(() => {
-    stepRef.current  = step
-    logRef.current   = log
-    phaseRef.current = phase
-  }, [step, log, phase])
+    convPhaseRef.current = convPhase
+    logRef.current       = log
+    phaseRef.current     = phase
+  }, [convPhase, log, phase])
 
   const isSupported = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window
-  const questions   = MAIN_QUESTIONS[lang]
-  const greeting    = GREETINGS[lang]
-  const isDone      = step === STEPS.DONE || timeLeft === 0
-
-  /* ── 2-minute Countdown timer ── */
-  useEffect(() => {
-    if (timerOn && !isDone) {
-      timerRef.current = setInterval(() => {
-        setTimeLeft(t => {
-          if (t <= 1) {
-            clearInterval(timerRef.current)
-            setStep(STEPS.DONE)
-            setPhase('done')
-            return 0
-          }
-          return t - 1
-        })
-      }, 1000)
-    }
-    return () => clearInterval(timerRef.current)
-  }, [timerOn, isDone])
+  const greeting    = GREETINGS[lang] || GREETINGS['en-IN']
+  const isDone      = convPhase === PHASES.DONE
 
   /* ── Switch language ── */
-  useEffect(() => {
+  function handleLanguageChange(newLang) {
+    if (phase === 'listening' || phase === 'speaking' || phase === 'generating') return
+    setLang(newLang)
     if (recognitionRef.current) {
-      recognitionRef.current.lang = lang
+      recognitionRef.current.lang = newLang
     }
-  }, [lang])
+  }
 
   /* ── Helper: Agent speaks text with browser speechSynthesis ── */
   const agentSpeak = useCallback((text, onDone) => {
@@ -153,7 +105,6 @@ export default function SpeakLog() {
     u.lang  = lang
     u.rate  = 0.95
 
-    // Choose the best available voice for language
     const voices = window.speechSynthesis.getVoices()
     const match = voices.find(v => v.lang === lang || v.lang.startsWith(lang.split('-')[0]))
     if (match) u.voice = match
@@ -175,7 +126,11 @@ export default function SpeakLog() {
   /* ── Helper: Start speech recognition ── */
   const startListening = useCallback(() => {
     if (!isSupported) {
-      setSrError('Use Google Chrome for Web Speech API.')
+      setSrError(
+        lang === 'ta-IN'
+          ? 'இந்த உலாவியில் பேச்சு அறிதல் கிடைக்கவில்லை. Google Chrome-ஐ பயன்படுத்தவும்.'
+          : 'Speech recognition is not available in this browser. Please open SpeakLog in Google Chrome.'
+      )
       return
     }
     setSrError('')
@@ -212,7 +167,13 @@ export default function SpeakLog() {
     }
 
     r.onerror = (e) => {
-      if (e.error !== 'no-speech') {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        const msg = lang === 'ta-IN'
+          ? 'தயவுசெய்து உங்கள் உலாவியில் மைக்ரோஃபோன் அணுகலை அனுமதிக்கவும்.'
+          : 'Please allow microphone access.'
+        setSrError(msg)
+        agentSpeak(msg)
+      } else if (e.error !== 'no-speech') {
         setSrError(`Microphone notice: ${e.error}`)
       }
       setPhase('idle')
@@ -224,7 +185,6 @@ export default function SpeakLog() {
       if (text) {
         answerRef.current?.(text)
       } else {
-        // If silence or empty, keep phase idle
         if (phaseRef.current === 'listening') {
           setPhase('idle')
         }
@@ -237,7 +197,7 @@ export default function SpeakLog() {
     } catch (err) {
       console.warn('SpeechRecognition start error:', err)
     }
-  }, [lang, isSupported])
+  }, [lang, isSupported, agentSpeak])
 
   const stopListening = useCallback(() => {
     try {
@@ -245,30 +205,70 @@ export default function SpeakLog() {
     } catch {}
   }, [])
 
+  /* ── 2-minute Countdown timer ── */
+  useEffect(() => {
+    if (timerOn && convPhase !== PHASES.DONE) {
+      timerRef.current = setInterval(() => {
+        setTimeLeft(t => {
+          if (t <= 1) {
+            clearInterval(timerRef.current)
+            try { recognitionRef.current?.stop() } catch {}
+            // Time reached ~2 minutes: finalize transcript and guide to confirmation review
+            setConvPhase(prev => {
+              if (prev !== PHASES.DONE && prev !== PHASES.CONFIRM) {
+                setPhase('confirming')
+                const timeoutMsg = lang === 'ta-IN'
+                  ? 'இரண்டு நிமிடங்கள் முடிந்தது! உங்கள் log தயாராக உள்ளது. இதை save செய்யவா?'
+                  : 'Two minutes are up! Here is your daily log. Review your responses below.'
+                agentSpeak(timeoutMsg)
+                return PHASES.CONFIRM
+              }
+              return prev
+            })
+            return 0
+          }
+          return t - 1
+        })
+      }, 1000)
+    }
+    return () => clearInterval(timerRef.current)
+  }, [timerOn, convPhase, lang, agentSpeak])
+
+  /* ── Finish Log Button Handler ── */
+  const handleFinishLog = useCallback(() => {
+    window.speechSynthesis?.cancel()
+    try { recognitionRef.current?.stop() } catch {}
+    setConvPhase(PHASES.CONFIRM)
+    setPhase('confirming')
+    const confirmPrompt = lang === 'ta-IN'
+      ? 'உங்கள் log தயாராக உள்ளது. இதை save செய்ய Submit Log அழுத்தவும் அல்லது "yes, save it" என்று சொல்லவும்.'
+      : 'Here is your daily log. Review your responses below and tap Submit Log to confirm.'
+    agentSpeak(confirmPrompt)
+  }, [lang, agentSpeak])
+
   /* ── Core State Machine: Process Student Answer ── */
   const handleStudentAnswer = useCallback(async (text) => {
-    const currentStep = stepRef.current
+    const currentPhase = convPhaseRef.current
 
-    // Add to visual transcript history
     setLines(prev => [...prev, { text, ts: Date.now() }])
 
-    // 1. Answered Q1 (What did you try?)
-    if (currentStep === STEPS.Q1) {
+    // 1. Answered WHAT_TRIED ("What did you work on today?")
+    if (currentPhase === PHASES.WHAT_TRIED) {
       setLog(l => ({ ...l, tried: text }))
+      setConvPhase(PHASES.FOLLOWUP_1)
       setPhase('generating')
 
-      const mainQ = questions[0].q
+      const mainQ = QUESTIONS[lang][PHASES.WHAT_TRIED]
       const res = await requestFollowUp({
         transcript: text,
         question: mainQ,
         language: lang,
-        phase: 'WHAT_TRIED',
+        phase: PHASES.WHAT_TRIED,
       })
 
       const followUpText = res.followUp
       setFollowUpQ1(followUpText)
       setFollowUpSource(res.source)
-      setStep(STEPS.Q1_FOLLOWUP)
 
       agentSpeak(followUpText, () => {
         startListening()
@@ -276,35 +276,35 @@ export default function SpeakLog() {
       return
     }
 
-    // 2. Answered Q1 Follow-Up -> Move to Q2
-    if (currentStep === STEPS.Q1_FOLLOWUP) {
+    // 2. Answered FOLLOWUP_1 -> Move to WHAT_BROKE
+    if (currentPhase === PHASES.FOLLOWUP_1) {
       setLog(l => ({ ...l, triedFollowUp: text }))
-      setStep(STEPS.Q2)
+      setConvPhase(PHASES.WHAT_BROKE)
 
-      const q2 = questions[1].q
+      const q2 = QUESTIONS[lang][PHASES.WHAT_BROKE]
       agentSpeak(q2, () => {
         startListening()
       })
       return
     }
 
-    // 3. Answered Q2 (What broke?)
-    if (currentStep === STEPS.Q2) {
+    // 3. Answered WHAT_BROKE ("What broke or didn't work as expected?")
+    if (currentPhase === PHASES.WHAT_BROKE) {
       setLog(l => ({ ...l, broke: text }))
+      setConvPhase(PHASES.FOLLOWUP_2)
       setPhase('generating')
 
-      const mainQ = questions[1].q
+      const mainQ = QUESTIONS[lang][PHASES.WHAT_BROKE]
       const res = await requestFollowUp({
         transcript: text,
         question: mainQ,
         language: lang,
-        phase: 'WHAT_BROKE',
+        phase: PHASES.WHAT_BROKE,
       })
 
       const followUpText = res.followUp
       setFollowUpQ2(followUpText)
       setFollowUpSource(res.source)
-      setStep(STEPS.Q2_FOLLOWUP)
 
       agentSpeak(followUpText, () => {
         startListening()
@@ -312,35 +312,35 @@ export default function SpeakLog() {
       return
     }
 
-    // 4. Answered Q2 Follow-Up -> Move to Q3
-    if (currentStep === STEPS.Q2_FOLLOWUP) {
+    // 4. Answered FOLLOWUP_2 -> Move to WHY
+    if (currentPhase === PHASES.FOLLOWUP_2) {
       setLog(l => ({ ...l, brokeFollowUp: text }))
-      setStep(STEPS.Q3)
+      setConvPhase(PHASES.WHY)
 
-      const q3 = questions[2].q
+      const q3 = QUESTIONS[lang][PHASES.WHY]
       agentSpeak(q3, () => {
         startListening()
       })
       return
     }
 
-    // 5. Answered Q3 (Why do you think that happened?)
-    if (currentStep === STEPS.Q3) {
+    // 5. Answered WHY ("Why do you think that happened?")
+    if (currentPhase === PHASES.WHY) {
       setLog(l => ({ ...l, why: text }))
+      setConvPhase(PHASES.FOLLOWUP_3)
       setPhase('generating')
 
-      const mainQ = questions[2].q
+      const mainQ = QUESTIONS[lang][PHASES.WHY]
       const res = await requestFollowUp({
         transcript: text,
         question: mainQ,
         language: lang,
-        phase: 'WHY',
+        phase: PHASES.WHY,
       })
 
       const followUpText = res.followUp
       setFollowUpQ3(followUpText)
       setFollowUpSource(res.source)
-      setStep(STEPS.Q3_FOLLOWUP)
 
       agentSpeak(followUpText, () => {
         startListening()
@@ -348,16 +348,13 @@ export default function SpeakLog() {
       return
     }
 
-    // 6. Answered Q3 Follow-Up -> Move to Confirmation Phase
-    if (currentStep === STEPS.Q3_FOLLOWUP) {
+    // 6. Answered FOLLOWUP_3 -> Move to Confirmation Phase
+    if (currentPhase === PHASES.FOLLOWUP_3) {
       setLog(l => ({ ...l, whyFollowUp: text }))
-      setStep(STEPS.CONFIRM)
+      setConvPhase(PHASES.CONFIRM)
       setPhase('confirming')
 
-      const confirmPrompt = lang === 'ta-IN'
-        ? `உங்கள் log உங்கள் சொந்த வார்த்தைகளில் தயாராக உள்ளது. இதை save செய்யவா? உறுதிப்படுத்த 'yes, save it' என்று சொல்லவும்.`
-        : `Here is your log in your own words. Should I save this log? Say 'yes, save it' to confirm.`
-
+      const confirmPrompt = QUESTIONS[lang][PHASES.CONFIRM]
       agentSpeak(confirmPrompt, () => {
         startListening()
       })
@@ -365,7 +362,7 @@ export default function SpeakLog() {
     }
 
     // 7. In Confirmation Phase -> Check for Voice Confirmation
-    if (currentStep === STEPS.CONFIRM) {
+    if (currentPhase === PHASES.CONFIRM) {
       if (isConfirmation(text)) {
         saveLogRef.current?.()
       } else if (isCancellation(text)) {
@@ -377,14 +374,14 @@ export default function SpeakLog() {
         })
       } else {
         const retryPrompt = lang === 'ta-IN'
-          ? `புரியவில்லை. இதை save செய்ய 'yes, save it' என்று சொல்லவும் அல்லது Save Log கிளிக் செய்யவும்.`
-          : `I didn't quite catch that. Say "yes, save it" to confirm, or click Save Log.`
+          ? `புரியவில்லை. இதை save செய்ய 'yes, save it' அல்லது 'சரி சேவ் பண்ணு' என்று சொல்லவும் அல்லது Submit Log கிளிக் செய்யவும்.`
+          : `I didn't quite catch that. Say "yes, save it" to confirm, or click Submit Log.`
         agentSpeak(retryPrompt, () => {
           startListening()
         })
       }
     }
-  }, [questions, lang, agentSpeak, startListening])
+  }, [lang, agentSpeak, startListening])
 
   /* ── Generate AI Session Analysis ── */
   const runAnalysis = useCallback(async (currentLog, logId) => {
@@ -394,7 +391,6 @@ export default function SpeakLog() {
       const res = await requestAnalysis({
         log: currentLog,
         language: lang,
-        customApiKey: apiKey,
       })
       if (res && res.success) {
         setAnalysis(res)
@@ -410,9 +406,9 @@ export default function SpeakLog() {
     } finally {
       setIsAnalyzing(false)
     }
-  }, [lang, apiKey])
+  }, [lang])
 
-  /* ── Save Log Locally ── */
+  /* ── Save Log & Submit ── */
   const triggerSaveLog = useCallback(async () => {
     setPhase('saving')
     setSaveError('')
@@ -426,21 +422,22 @@ export default function SpeakLog() {
       const currentLog = logRef.current
       const result = await saveLog({
         tried: currentLog.tried,
+        triedFollowUp: currentLog.triedFollowUp,
         broke: currentLog.broke,
+        brokeFollowUp: currentLog.brokeFollowUp,
         why: currentLog.why,
+        whyFollowUp: currentLog.whyFollowUp,
         language: lang,
       })
 
       setSavedResult(result)
-      setStep(STEPS.DONE)
+      setConvPhase(PHASES.DONE)
       setPhase('done')
 
       // Trigger AI Analysis in parallel
       runAnalysis(currentLog, result.id)
 
-      const successMsg = lang === 'ta-IN'
-        ? 'உங்கள் log வெற்றிகரமாக save செய்யப்பட்டது!'
-        : 'Awesome! Your log has been saved.'
+      const successMsg = QUESTIONS[lang][PHASES.DONE]
       agentSpeak(successMsg)
     } catch (err) {
       console.error('Save error:', err)
@@ -448,6 +445,32 @@ export default function SpeakLog() {
       setPhase('confirming')
     }
   }, [lang, agentSpeak, runAnalysis])
+
+  /* ── Retry Proof Submission ── */
+  const handleRetryProof = useCallback(async () => {
+    if (!savedResult?.id) return
+    setIsRetryingProof(true)
+    try {
+      const res = await retryProofSubmission({
+        logId: savedResult.id,
+        log: logRef.current,
+        language: lang,
+      })
+      if (res.proofSubmitted) {
+        setSavedResult(prev => ({ ...prev, proofSubmitted: true, proofError: null }))
+        const successSpeech = lang === 'ta-IN'
+          ? 'Proof submission வெற்றிகரமாக முடிந்தது!'
+          : 'Log submitted successfully to Proof!'
+        agentSpeak(successSpeech)
+      } else {
+        setSavedResult(prev => ({ ...prev, proofError: res.error || 'Retry rejected' }))
+      }
+    } catch (err) {
+      console.error('Proof retry error:', err)
+    } finally {
+      setIsRetryingProof(false)
+    }
+  }, [savedResult, lang, agentSpeak])
 
   useEffect(() => {
     answerRef.current = handleStudentAnswer
@@ -459,32 +482,28 @@ export default function SpeakLog() {
 
   /* ── Mic Tap Handler ── */
   function handleMicTap() {
-    if (isDone) return
+    if (convPhase === PHASES.DONE) return
 
-    // If currently listening, manual stop triggers recognition.onend
     if (phase === 'listening') {
       stopListening()
       return
     }
 
-    // If agent is speaking, cancel and start listening
     if (phase === 'speaking') {
       window.speechSynthesis?.cancel()
       setAgentText('')
     }
 
-    // If first tap, start session
-    if (!timerOn) {
+    if (convPhase === PHASES.INTRO || !timerOn) {
       setTimerOn(true)
-      const firstQ = questions[0].q
-      const greetingPrefix = lang === 'ta-IN' ? 'வணக்கம்! ' : ''
-      agentSpeak(`${greetingPrefix}${firstQ}`, () => {
+      const introPrompt = QUESTIONS[lang][PHASES.INTRO]
+      agentSpeak(introPrompt, () => {
+        setConvPhase(PHASES.WHAT_TRIED)
         startListening()
       })
       return
     }
 
-    // Subsequent tap: listen for current active step
     startListening()
   }
 
@@ -495,7 +514,7 @@ export default function SpeakLog() {
     clearInterval(timerRef.current)
 
     setPhase('idle')
-    setStep(STEPS.Q1)
+    setConvPhase(PHASES.INTRO)
     setTimeLeft(TOTAL_SECONDS)
     setTimerOn(false)
     setLines([])
@@ -508,6 +527,7 @@ export default function SpeakLog() {
     setFollowUpSource('')
     setSavedResult(null)
     setSaveError('')
+    setIsRetryingProof(false)
     setAnalysis(null)
     setIsAnalyzing(false)
     setAnalysisError('')
@@ -521,495 +541,607 @@ export default function SpeakLog() {
     })
   }
 
-  /* ── Save Custom API Key ── */
-  function handleSaveKey() {
-    setStoredApiKey(tempKey)
-    setApiKey(tempKey.trim())
-    setShowKeyModal(false)
-  }
-
-  /* ── Determine Current Displayed Question Text ── */
+  /* ── Determine Current Question / Speech Quote Text ── */
   let currentTitle = ''
-  let currentEnSubtitle = ''
-  let stepBadgeText = ''
-  let isFollowUpStep = false
-
-  switch (step) {
-    case STEPS.Q1:
-      stepBadgeText = 'Question 1 of 3'
-      currentTitle = questions[0].q
-      currentEnSubtitle = questions[0].en
+  switch (convPhase) {
+    case PHASES.INTRO:
+      currentTitle = lang === 'ta-IN' ? 'SpeakLog-க்கு வரவேற்கிறோம்' : 'Welcome to SpeakLog'
       break
-    case STEPS.Q1_FOLLOWUP:
-      stepBadgeText = 'Follow-up 1 of 3'
-      isFollowUpStep = true
+    case PHASES.WHAT_TRIED:
+      currentTitle = QUESTIONS[lang][PHASES.WHAT_TRIED]
+      break
+    case PHASES.FOLLOWUP_1:
       currentTitle = followUpQ1 || '...'
       break
-    case STEPS.Q2:
-      stepBadgeText = 'Question 2 of 3'
-      currentTitle = questions[1].q
-      currentEnSubtitle = questions[1].en
+    case PHASES.WHAT_BROKE:
+      currentTitle = QUESTIONS[lang][PHASES.WHAT_BROKE]
       break
-    case STEPS.Q2_FOLLOWUP:
-      stepBadgeText = 'Follow-up 2 of 3'
-      isFollowUpStep = true
+    case PHASES.FOLLOWUP_2:
       currentTitle = followUpQ2 || '...'
       break
-    case STEPS.Q3:
-      stepBadgeText = 'Question 3 of 3'
-      currentTitle = questions[2].q
-      currentEnSubtitle = questions[2].en
+    case PHASES.WHY:
+      currentTitle = QUESTIONS[lang][PHASES.WHY]
       break
-    case STEPS.Q3_FOLLOWUP:
-      stepBadgeText = 'Follow-up 3 of 3'
-      isFollowUpStep = true
+    case PHASES.FOLLOWUP_3:
       currentTitle = followUpQ3 || '...'
       break
-    case STEPS.CONFIRM:
-      stepBadgeText = 'Review & Confirmation'
-      currentTitle = lang === 'ta-IN' ? 'உங்கள் Log-ஐ சரிபார்க்கவும்' : 'Review your log'
-      currentEnSubtitle = lang === 'ta-IN' ? 'Check your verbatim responses below' : ''
+    case PHASES.CONFIRM:
+      currentTitle = lang === 'ta-IN' ? 'உங்கள் Log-ஐ சரிபார்க்கவும்' : 'Your Daily Log'
       break
-    case STEPS.DONE:
-      stepBadgeText = 'Complete'
+    case PHASES.DONE:
       currentTitle = lang === 'ta-IN' ? 'நன்றி! பதிவு முடிந்தது' : 'Session Complete'
       break
     default:
       break
   }
 
-  const timerDanger  = timeLeft <= 20
-  const timerWarning = timeLeft <= 40 && !timerDanger
+  const isConfirmOrDone = convPhase === PHASES.CONFIRM || convPhase === PHASES.DONE
+  const isBeforeStart   = !timerOn && convPhase === PHASES.INTRO
+  const isAfterStart    = timerOn && !isConfirmOrDone
+  const timerDanger     = timeLeft <= 20
+  const timerWarning    = timeLeft <= 40 && !timerDanger
+
+  // Current response snippet for the live response box during After Start
+  let currentResponseSnippet = interim
+  if (!currentResponseSnippet) {
+    switch (convPhase) {
+      case PHASES.WHAT_TRIED:
+        currentResponseSnippet = log.tried
+        break
+      case PHASES.FOLLOWUP_1:
+        currentResponseSnippet = log.triedFollowUp || log.tried
+        break
+      case PHASES.WHAT_BROKE:
+        currentResponseSnippet = log.broke
+        break
+      case PHASES.FOLLOWUP_2:
+        currentResponseSnippet = log.brokeFollowUp || log.broke
+        break
+      case PHASES.WHY:
+        currentResponseSnippet = log.why
+        break
+      case PHASES.FOLLOWUP_3:
+        currentResponseSnippet = log.whyFollowUp || log.why
+        break
+      default:
+        break
+    }
+  }
 
   return (
     <div className="sl-bg">
       <div className="sl-card">
 
-        {/* ══════════ TOP BAR ══════════ */}
-        <div className="sl-topbar">
-          <div className="sl-brand">
-            <div className="sl-logo"><i className="bi bi-mic-fill" /></div>
-            <span className="sl-brand-name">SpeakLog</span>
-          </div>
-
-          <div className="sl-top-actions">
-            {/* OpenAI API Key settings */}
-            <button
-              className="sl-icon-btn"
-              title="OpenAI API Settings"
-              onClick={() => { setTempKey(apiKey); setShowKeyModal(true) }}
-              aria-label="OpenAI Settings"
-            >
-              <i className="bi bi-sliders" />
-              {apiKey && <span className="sl-key-dot" title="OpenAI API Key configured" />}
-            </button>
-
-            {/* Countdown timer */}
-            <div className={`sl-timer ${timerDanger ? 'danger' : timerWarning ? 'warning' : ''}`}>
-              <i className="bi bi-clock me-1" />
-              {fmtTime(timeLeft)}
-            </div>
-          </div>
-        </div>
-
-        {/* ══════════ GREETING ══════════ */}
-        <div className="sl-greeting">
-          <p className="sl-greeting-main">{greeting.main}</p>
-          {greeting.en && <p className="sl-greeting-en">{greeting.en}</p>}
-        </div>
-
-        {/* ══════════ QUESTION & PROMPT BOX ══════════ */}
-        <div className="sl-question-box">
-          <div className="d-flex align-items-center justify-content-between mb-1">
-            <div className="sl-q-num">{stepBadgeText}</div>
-            {isFollowUpStep && (
-              <span className="sl-ai-badge">
-                <i className="bi bi-stars" />
-                {followUpSource === 'openai' ? 'OpenAI GPT-4o-mini' : 'AI Follow-up'}
-              </span>
-            )}
-          </div>
-
-          {phase === 'generating' ? (
-            <div className="sl-generating-indicator">
-              <i className="bi bi-arrow-repeat sl-spin" />
-              <span>
-                {lang === 'ta-IN'
-                  ? 'OpenAI Follow-up கேள்வி தயாரிக்கிறது…'
-                  : 'Generating follow-up question via OpenAI…'}
-              </span>
-            </div>
-          ) : (
-            <>
-              <p className="sl-q-main">{currentTitle}</p>
-              {currentEnSubtitle && <p className="sl-q-en">{currentEnSubtitle}</p>}
-            </>
-          )}
-
-          {/* Agent speaking animated dots */}
-          {agentText && (
-            <div className="sl-agent-speaking">
-              <span className="sl-agent-dot" />
-              <span className="sl-agent-dot" />
-              <span className="sl-agent-dot" />
-            </div>
-          )}
-
-          {/* Verbatim Log Card during Confirmation Step */}
-          {step === STEPS.CONFIRM && (
-            <div className="sl-verbatim-container">
-              <div className="sl-verbatim-card">
-                <div className="sl-verbatim-tag">
-                  <i className="bi bi-lightning-charge text-warning" /> What I tried (Verbatim)
-                </div>
-                <div className={`sl-verbatim-text ${!log.tried ? 'empty' : ''}`}>
-                  {log.tried || 'No answer recorded'}
-                </div>
+        {/* ════════════════════════════════════════════════════════════════
+            1. BEFORE STARTING (UI 1: Presentation & Assignment Clarity)
+           ════════════════════════════════════════════════════════════════ */}
+        {isBeforeStart && (
+          <div>
+            {/* Topbar: SpeakLog + தமிழ் | English + 02:00 */}
+            <div className="sl-topbar">
+              <div className="sl-brand">
+                <div className="sl-logo"><i className="bi bi-mic-fill" /></div>
+                <span className="sl-brand-name">SpeakLog</span>
               </div>
-
-              <div className="sl-verbatim-card">
-                <div className="sl-verbatim-tag">
-                  <i className="bi bi-exclamation-triangle text-danger" /> What broke (Verbatim)
-                </div>
-                <div className={`sl-verbatim-text ${!log.broke ? 'empty' : ''}`}>
-                  {log.broke || 'No answer recorded'}
-                </div>
-              </div>
-
-              <div className="sl-verbatim-card">
-                <div className="sl-verbatim-tag">
-                  <i className="bi bi-lightbulb text-info" /> Why (Verbatim)
-                </div>
-                <div className={`sl-verbatim-text ${!log.why ? 'empty' : ''}`}>
-                  {log.why || 'No answer recorded'}
-                </div>
-              </div>
-
-              <div className="sl-confirm-buttons">
-                <button
-                  id="btn-save-log"
-                  className="sl-post-btn"
-                  onClick={triggerSaveLog}
-                  disabled={phase === 'saving'}
-                >
-                  <i className="bi bi-check2-circle" />
-                  {phase === 'saving' ? 'Saving log…' : 'Save Log'}
-                </button>
-                <button
-                  className="sl-cancel-btn"
-                  onClick={handleReset}
-                  disabled={phase === 'saving'}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Log Save Success Card */}
-          {savedResult && (
-            <div className="sl-save-card">
-              <div className="sl-save-title">
-                <i className="bi bi-check-circle-fill text-success" />
-                Log Saved Successfully!
-              </div>
-              <div className="sl-save-id">Log ID: {savedResult.id}</div>
-            </div>
-          )}
-
-          {/* AI Mentor Analysis Box */}
-          {savedResult && (
-            <div className="sl-analysis-box">
-              <div className="sl-analysis-header">
-                <div className="sl-analysis-title">
-                  <i className="bi bi-robot text-primary" />
-                  <span>AI Mentor Analysis</span>
-                </div>
-                <div className="d-flex align-items-center gap-2">
-                  <span className={`sl-analysis-badge ${analysis?.source === 'openai' ? 'openai' : ''}`}>
-                    {analysis?.source === 'openai' ? 'GPT-4o-mini' : 'Smart Heuristic'}
-                  </span>
+              <div className="d-flex align-items-center gap-2">
+                <div className="sl-lang-toggle" role="group" aria-label="Language selection">
                   <button
-                    className="sl-icon-btn"
-                    style={{ width: '28px', height: '28px', fontSize: '0.8rem' }}
-                    onClick={() => runAnalysis(log, savedResult.id)}
-                    title="Re-analyze"
-                    disabled={isAnalyzing}
+                    id="lang-ta"
+                    className={`sl-lang-btn ${lang === 'ta-IN' ? 'active' : ''}`}
+                    onClick={() => handleLanguageChange('ta-IN')}
+                    title="தமிழ் (Tamil)"
                   >
-                    <i className={`bi bi-arrow-clockwise ${isAnalyzing ? 'sl-spin' : ''}`} />
+                    தமிழ்
+                  </button>
+                  <button
+                    id="lang-en"
+                    className={`sl-lang-btn ${lang === 'en-IN' ? 'active' : ''}`}
+                    onClick={() => handleLanguageChange('en-IN')}
+                    title="English"
+                  >
+                    English
                   </button>
                 </div>
+                <div className="sl-timer" title="Session limit: 2 minutes">
+                  <i className="bi bi-clock me-1" />
+                  02:00
+                </div>
+              </div>
+            </div>
+
+            {/* 👋 Let's talk about your day */}
+            <div className="sl-greeting">
+              <div className="sl-greeting-main">
+                {lang === 'ta-IN' ? '👋 வணக்கம்! உங்கள் நாளைப் பற்றி பேசலாம்' : "👋 Let's talk about your day"}
+              </div>
+              <div className="sl-greeting-en">
+                {lang === 'ta-IN'
+                  ? 'உங்கள் பொறியியல் பதிவிற்கான 2 நிமிட குரல் பிரதிபலிப்பு'
+                  : '2-minute voice reflection for your engineering log'}
+              </div>
+            </div>
+
+            {/* Welcome Card */}
+            <div className="sl-question-box">
+              <div className="sl-q-num">
+                {lang === 'ta-IN' ? 'படி 1: மொழியைத் தேர்ந்தெடுத்துத் தொடங்கவும்' : 'STEP 1: CHOOSE LANGUAGE & START'}
+              </div>
+              <div className="sl-q-main">
+                {lang === 'ta-IN' ? 'SpeakLog-க்கு வரவேற்கிறோம்' : 'Welcome to SpeakLog'}
+              </div>
+              <div className="sl-q-en">
+                {lang === 'ta-IN'
+                  ? 'உங்கள் தினசரி பொறியியல் பதிவை 2 நிமிடங்களில் பதிவு செய்யுங்கள்.'
+                  : "Let's capture your daily engineering log in about 2 minutes."}
+              </div>
+              <div className="sl-intro-hint">
+                <i className="bi bi-chat-quote-fill me-2 text-primary" />
+                <span>
+                  {lang === 'ta-IN'
+                    ? 'மைக்ரோஃபோனைத் தட்டவும் அல்லது கீழே உள்ள பொத்தானை அழுத்தி தொடங்கவும்.'
+                    : 'Tap the microphone to start your 2-minute voice reflection check-in.'}
+                </span>
+              </div>
+            </div>
+
+            {/* Central Mic Button + Start Voice Log */}
+            <div className="sl-mic-zone">
+              <button
+                id="mic-btn"
+                className="sl-mic"
+                onClick={handleMicTap}
+                aria-label="Start voice log"
+              >
+                <i className="bi bi-mic-fill" />
+              </button>
+              <span className="sl-mic-hint">
+                {lang === 'ta-IN' ? 'தொடங்க மைக்ரோஃபோனைத் தட்டவும்' : 'Tap to start voice log'}
+              </span>
+              <button
+                id="btn-start-log"
+                className="sl-finish-btn"
+                onClick={handleMicTap}
+                style={{
+                  background: 'linear-gradient(135deg, var(--accent), var(--accent-2))',
+                  border: 'none',
+                  boxShadow: '0 4px 18px var(--accent-glow)',
+                  marginTop: '0.2rem',
+                }}
+              >
+                <i className="bi bi-play-circle-fill me-1" />
+                Start Voice Log
+              </button>
+            </div>
+
+            {/* Speech error notice if any */}
+            {srError && (
+              <div className="sl-error mx-3 mb-2">
+                <i className="bi bi-exclamation-circle me-2" />{srError}
+              </div>
+            )}
+
+            {!isSupported && (
+              <div className="sl-error mx-3 mb-2">
+                <i className="bi bi-exclamation-triangle me-2" />
+                {lang === 'ta-IN'
+                  ? 'இந்த உலாவியில் பேச்சு அறிதல் கிடைக்கவில்லை. Google Chrome-ஐ பயன்படுத்தவும்.'
+                  : 'Speech recognition is not available in this browser. Please open SpeakLog in Google Chrome.'}
+              </div>
+            )}
+
+            {/* Bottom verbatim response placeholder box */}
+            <div className="sl-bottom">
+              <div className="sl-transcript">
+                <div className="sl-transcript-placeholder">
+                  <i className="bi bi-chat-square-text me-2" />
+                  {lang === 'ta-IN'
+                    ? 'உங்கள் பதில்கள் இங்கு தோன்றும்...'
+                    : 'Your verbatim responses will appear here'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════════════════════════════════════════════════════════════════
+            2. AFTER START (UI 2: Simplicity & Clean Voice Interaction)
+           ════════════════════════════════════════════════════════════════ */}
+        {isAfterStart && (
+          <div>
+            {/* Topbar: SpeakLog + தமிழ் | English */}
+            <div className="sl-topbar">
+              <div className="sl-brand">
+                <div className="sl-logo"><i className="bi bi-mic-fill" /></div>
+                <span className="sl-brand-name">SpeakLog</span>
+              </div>
+              <div className="sl-lang-toggle" role="group" aria-label="Language selection">
+                <button
+                  id="lang-ta"
+                  className={`sl-lang-btn ${lang === 'ta-IN' ? 'active' : ''}`}
+                  onClick={() => handleLanguageChange('ta-IN')}
+                  disabled={phase === 'listening' || phase === 'speaking' || phase === 'generating'}
+                  title="தமிழ் (Tamil)"
+                >
+                  தமிழ்
+                </button>
+                <button
+                  id="lang-en"
+                  className={`sl-lang-btn ${lang === 'en-IN' ? 'active' : ''}`}
+                  onClick={() => handleLanguageChange('en-IN')}
+                  disabled={phase === 'listening' || phase === 'speaking' || phase === 'generating'}
+                  title="English"
+                >
+                  English
+                </button>
+              </div>
+            </div>
+
+            <div className="sl-after-start-body">
+              {/* 01:24 / 02:00 Timer */}
+              <div className={`sl-timer-counter ${timerDanger ? 'danger' : timerWarning ? 'warning' : ''}`}>
+                <i className="bi bi-clock me-1" />
+                <span>{fmtTimerDisplay(timeLeft)}</span>
               </div>
 
-              {isAnalyzing ? (
-                <div className="sl-analysis-loading">
-                  <i className="bi bi-gear-wide-connected sl-spin text-primary" style={{ fontSize: '1.6rem' }} />
-                  <span>Analyzing your engineering log with AI…</span>
-                </div>
-              ) : analysis ? (
-                <div>
-                  {analysis.momentum && (
-                    <div className="sl-analysis-momentum-tag">
-                      <i className="bi bi-lightning-charge-fill text-warning" />
-                      <span><strong>Momentum:</strong> {analysis.momentum}</span>
-                    </div>
-                  )}
+              {/* Status indicator */}
+              <div className={`sl-status-pill ${phase}`}>
+                {phase === 'listening' ? (
+                  <>
+                    <i className="bi bi-broadcast" />
+                    <span>🎙️ Listening</span>
+                  </>
+                ) : phase === 'speaking' ? (
+                  <>
+                    <i className="bi bi-volume-up-fill" />
+                    <span>🔊 Speaking...</span>
+                  </>
+                ) : phase === 'generating' ? (
+                  <>
+                    <i className="bi bi-stars sl-spin" />
+                    <span>✨ AI Follow-up...</span>
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-mic" />
+                    <span>🎙️ Ready</span>
+                  </>
+                )}
+              </div>
 
-                  <div className="sl-analysis-section">
-                    <div className="sl-analysis-sec-title">
-                      <i className="bi bi-journal-text" /> Today's Focus
-                    </div>
-                    <p className="sl-analysis-sec-content">{analysis.summary}</p>
+              {/* Central Mic Button */}
+              <div className="sl-mic-zone" style={{ padding: '0.2rem 0' }}>
+                <button
+                  id="mic-btn"
+                  className={`sl-mic ${phase === 'listening' ? 'active' : phase === 'speaking' ? 'agent' : ''}`}
+                  onClick={handleMicTap}
+                  disabled={phase === 'generating' || phase === 'saving'}
+                  aria-label={phase === 'listening' ? 'Stop speaking' : 'Start speaking'}
+                >
+                  {phase === 'listening'
+                    ? <i className="bi bi-stop-fill" />
+                    : phase === 'speaking'
+                      ? <i className="bi bi-volume-up-fill" />
+                      : phase === 'generating'
+                        ? <i className="bi bi-arrow-repeat sl-spin" />
+                        : <i className="bi bi-mic-fill" />}
+                </button>
+
+                {phase === 'listening' && (
+                  <div className="sl-wave" aria-hidden="true">
+                    {[...Array(9)].map((_, i) => <span key={i} />)}
                   </div>
+                )}
+              </div>
 
-                  {analysis.blockerAnalysis && analysis.blockerAnalysis !== 'N/A' && (
-                    <div className="sl-analysis-section">
-                      <div className="sl-analysis-sec-title">
-                        <i className="bi bi-bug" /> Blocker & Root Cause
-                      </div>
-                      <p className="sl-analysis-sec-content blocker">{analysis.blockerAnalysis}</p>
-                    </div>
+              {/* Agent's current question */}
+              <div className="sl-speech-quote">
+                {`"${currentTitle}"`}
+              </div>
+
+              {/* Response Card: Your response appears here... */}
+              <div className="sl-live-response-box">
+                <div className="sl-live-response-header">
+                  <i className="bi bi-chat-left-dots-fill me-1" />
+                  <span>{lang === 'ta-IN' ? 'உங்கள் நேரடி பதில்' : 'Your Live Response'}</span>
+                </div>
+                <div className="sl-live-response-content">
+                  {interim ? (
+                    <span className="sl-live-interim">{interim}</span>
+                  ) : currentResponseSnippet ? (
+                    <span className="sl-live-captured">{currentResponseSnippet}</span>
+                  ) : (
+                    <span className="sl-live-placeholder">
+                      {lang === 'ta-IN' ? 'உங்கள் பதில் இங்கு தோன்றும்...' : 'Your response appears here...'}
+                    </span>
                   )}
+                </div>
+              </div>
 
-                  {analysis.keyLearnings && analysis.keyLearnings !== 'N/A' && (
-                    <div className="sl-analysis-section">
-                      <div className="sl-analysis-sec-title">
-                        <i className="bi bi-lightbulb" /> Key Takeaway
-                      </div>
-                      <p className="sl-analysis-sec-content">{analysis.keyLearnings}</p>
-                    </div>
-                  )}
+              {/* Speech error notice if any */}
+              {srError && (
+                <div className="sl-error mx-3 mb-2" style={{ width: '100%' }}>
+                  <i className="bi bi-exclamation-circle me-2" />{srError}
+                </div>
+              )}
 
-                  {Array.isArray(analysis.nextSteps) && analysis.nextSteps.length > 0 && (
-                    <div className="sl-analysis-section">
-                      <div className="sl-analysis-sec-title">
-                        <i className="bi bi-check2-circle" /> Recommended Next Steps
-                      </div>
-                      <ul className="sl-analysis-steps">
-                        {analysis.nextSteps.map((s, idx) => (
-                          <li key={idx} className="sl-analysis-step-item">
-                            <i className="bi bi-arrow-right-short" />
-                            <span>{s}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+              {/* [ Finish Log ] */}
+              <div style={{ marginTop: '0.4rem' }}>
+                <button
+                  id="btn-finish-log"
+                  className="sl-finish-btn"
+                  onClick={handleFinishLog}
+                >
+                  <i className="bi bi-check2-all me-1" />
+                  Finish Log
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
-                  {Array.isArray(analysis.tags) && analysis.tags.length > 0 && (
-                    <div className="sl-analysis-section">
-                      <div className="sl-analysis-sec-title">
-                        <i className="bi bi-tags" /> Skill & Tech Tags
-                      </div>
-                      <div className="sl-analysis-tags-wrap">
-                        {analysis.tags.map((tag, idx) => (
-                          <span key={idx} className="sl-analysis-tag">#{tag}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+        {/* ════════════════════════════════════════════════════════════════
+            3. FINAL CONFIRMATION (Your Daily Log)
+           ════════════════════════════════════════════════════════════════ */}
+        {isConfirmOrDone && (
+          <div style={{ padding: '1rem 1.25rem 1.5rem' }}>
+            <div className="sl-daily-log-header">
+              <h2 className="sl-daily-log-title">Your Daily Log</h2>
+              <p className="sl-daily-log-sub">
+                {lang === 'ta-IN'
+                  ? 'உங்கள் சொந்த வார்த்தைகளில் பதிவு செய்யப்பட்ட விவரங்கள்'
+                  : 'Preserved verbatim without summarization'}
+              </p>
+            </div>
 
-                  {analysis.feedback && (
-                    <div className="sl-analysis-feedback">
-                      "{analysis.feedback}"
+            {/* Three distinct verbatim sections */}
+            <div className="sl-verbatim-container">
+              {/* Section 1: What I worked on */}
+              <div className="sl-verbatim-card">
+                <div className="sl-verbatim-tag tried">
+                  <i className="bi bi-lightning-charge-fill me-1" /> What I worked on
+                </div>
+                <div className={`sl-verbatim-text ${!log.tried ? 'empty' : ''}`}>
+                  {log.tried || 'No response recorded'}
+                  {log.triedFollowUp && (
+                    <div className="sl-verbatim-sub">
+                      <strong>Follow-up:</strong> {log.triedFollowUp}
                     </div>
                   )}
                 </div>
-              ) : analysisError ? (
-                <div className="sl-error">
-                  <i className="bi bi-exclamation-triangle me-2" />
-                  {analysisError}
-                  <div className="mt-2">
+              </div>
+
+              {/* Section 2: What broke */}
+              <div className="sl-verbatim-card">
+                <div className="sl-verbatim-tag broke">
+                  <i className="bi bi-exclamation-triangle-fill me-1" /> What broke
+                </div>
+                <div className={`sl-verbatim-text ${!log.broke ? 'empty' : ''}`}>
+                  {log.broke || 'No response recorded'}
+                  {log.brokeFollowUp && (
+                    <div className="sl-verbatim-sub">
+                      <strong>Follow-up:</strong> {log.brokeFollowUp}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Section 3: Why */}
+              <div className="sl-verbatim-card">
+                <div className="sl-verbatim-tag why">
+                  <i className="bi bi-lightbulb-fill me-1" /> Why
+                </div>
+                <div className={`sl-verbatim-text ${!log.why ? 'empty' : ''}`}>
+                  {log.why || 'No response recorded'}
+                  {log.whyFollowUp && (
+                    <div className="sl-verbatim-sub">
+                      <strong>Follow-up:</strong> {log.whyFollowUp}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Confirm Actions: Cancel & Save Log side-by-side */}
+              {convPhase === PHASES.CONFIRM && (
+                <div className="sl-confirm-actions">
+                  <button
+                    id="btn-cancel-log"
+                    className="sl-cancel-btn"
+                    onClick={handleReset}
+                    disabled={phase === 'saving'}
+                  >
+                    <i className="bi bi-x-circle me-1" />
+                    Cancel
+                  </button>
+                  <button
+                    id="btn-save-log"
+                    className="sl-save-btn"
+                    onClick={triggerSaveLog}
+                    disabled={phase === 'saving'}
+                  >
+                    <i className="bi bi-cloud-arrow-up-fill me-1" />
+                    {phase === 'saving' ? 'Saving...' : 'Save Log'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Error banner if save failed */}
+            {saveError && (
+              <div className="sl-error mt-3">
+                <i className="bi bi-exclamation-triangle me-2" />Save error: {saveError}
+              </div>
+            )}
+
+            {/* Dual Status: Log Saved & Proof Submission Card */}
+            {savedResult && (
+              <div className="sl-save-card">
+                <div className="sl-save-title">
+                  <i className="bi bi-check-circle-fill text-success" />
+                  ✓ Log saved successfully
+                </div>
+                <div className="sl-save-id">Log ID: {savedResult.id}</div>
+
+                <div className="sl-proof-row">
+                  {savedResult.proofSubmitted ? (
+                    <span className="sl-proof-badge success">
+                      <i className="bi bi-patch-check-fill" />
+                      ✓ Submitted successfully
+                    </span>
+                  ) : (
+                    <>
+                      <span className="sl-proof-badge warning">
+                        <i className="bi bi-exclamation-triangle-fill" />
+                        ⚠ Log created, but submission failed.
+                      </span>
+                      <button
+                        className="sl-proof-retry-btn"
+                        onClick={handleRetryProof}
+                        disabled={isRetryingProof}
+                        title="Retry submission to Proof"
+                      >
+                        <i className={`bi bi-arrow-clockwise ${isRetryingProof ? 'sl-spin' : ''}`} />
+                        {isRetryingProof ? 'Retrying…' : 'Retry'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* AI Mentor Analysis Box */}
+            {savedResult && (
+              <div className="sl-analysis-box">
+                <div className="sl-analysis-header">
+                  <div className="sl-analysis-title">
+                    <i className="bi bi-robot text-primary" />
+                    <span>AI Mentor Analysis</span>
+                  </div>
+                  <div className="d-flex align-items-center gap-2">
+                    <span className={`sl-analysis-badge ${analysis?.source === 'openai' ? 'openai' : ''}`}>
+                      {analysis?.source === 'openai' ? 'GPT-4o-mini' : 'Smart Heuristic'}
+                    </span>
                     <button
-                      className="sl-analysis-btn"
+                      className="sl-icon-btn"
+                      style={{ width: '28px', height: '28px', fontSize: '0.8rem' }}
                       onClick={() => runAnalysis(log, savedResult.id)}
+                      title="Re-analyze"
+                      disabled={isAnalyzing}
                     >
-                      Try Again
+                      <i className={`bi bi-arrow-clockwise ${isAnalyzing ? 'sl-spin' : ''}`} />
                     </button>
                   </div>
                 </div>
-              ) : (
-                <button
-                  className="sl-analysis-btn"
-                  onClick={() => runAnalysis(log, savedResult.id)}
-                >
-                  <i className="bi bi-stars" /> Generate AI Insights
-                </button>
-              )}
-            </div>
-          )}
-        </div>
 
-        {/* ══════════ MIC AREA ══════════ */}
-        <div className="sl-mic-zone">
-          <button
-            id="mic-btn"
-            className={`sl-mic ${phase === 'listening' ? 'active' : phase === 'speaking' ? 'agent' : ''}`}
-            onClick={handleMicTap}
-            disabled={isDone || phase === 'generating' || phase === 'saving'}
-            aria-label={phase === 'listening' ? 'Stop speaking' : 'Start speaking'}
-          >
-            {phase === 'listening'
-              ? <i className="bi bi-stop-fill" />
-              : phase === 'speaking'
-                ? <i className="bi bi-volume-up-fill" />
-                : phase === 'generating'
-                  ? <i className="bi bi-arrow-repeat sl-spin" />
-                  : <i className="bi bi-mic-fill" />}
-          </button>
+                {isAnalyzing ? (
+                  <div className="sl-analysis-loading">
+                    <i className="bi bi-gear-wide-connected sl-spin text-primary" style={{ fontSize: '1.6rem' }} />
+                    <span>Analyzing your engineering log with AI…</span>
+                  </div>
+                ) : analysis ? (
+                  <div>
+                    {analysis.momentum && (
+                      <div className="sl-analysis-momentum-tag">
+                        <i className="bi bi-lightning-charge-fill text-warning" />
+                        <span><strong>Momentum:</strong> {analysis.momentum}</span>
+                      </div>
+                    )}
 
-          {phase === 'listening' && (
-            <div className="sl-wave" aria-hidden="true">
-              {[...Array(9)].map((_, i) => <span key={i} />)}
-            </div>
-          )}
+                    <div className="sl-analysis-section">
+                      <div className="sl-analysis-sec-title">
+                        <i className="bi bi-journal-text" /> Today's Focus
+                      </div>
+                      <p className="sl-analysis-sec-content">{analysis.summary}</p>
+                    </div>
 
-          <p className="sl-mic-hint">
-            {isDone
-              ? 'Session complete'
-              : phase === 'saving'
-                ? 'Saving log…'
-                : phase === 'generating'
-                  ? 'Generating follow-up question…'
-                  : phase === 'listening'
-                    ? (step === STEPS.CONFIRM ? 'Listening… say "yes, save it"' : 'Listening… tap to stop')
-                    : phase === 'speaking'
-                      ? 'Agent speaking…'
-                      : step === STEPS.CONFIRM
-                        ? 'Say "yes, save it" or tap Save Log'
-                        : timerOn
-                          ? 'Tap to speak answer'
-                          : 'Tap to start speaking'}
-          </p>
-        </div>
+                    {analysis.blockerAnalysis && analysis.blockerAnalysis !== 'N/A' && (
+                      <div className="sl-analysis-section">
+                        <div className="sl-analysis-sec-title">
+                          <i className="bi bi-bug" /> Blocker & Root Cause
+                        </div>
+                        <p className="sl-analysis-sec-content blocker">{analysis.blockerAnalysis}</p>
+                      </div>
+                    )}
 
-        {/* ══════════ DIVIDER ══════════ */}
-        <div className="sl-divider" />
+                    {analysis.keyLearnings && analysis.keyLearnings !== 'N/A' && (
+                      <div className="sl-analysis-section">
+                        <div className="sl-analysis-sec-title">
+                          <i className="bi bi-lightbulb" /> Key Takeaway
+                        </div>
+                        <p className="sl-analysis-sec-content">{analysis.keyLearnings}</p>
+                      </div>
+                    )}
 
-        {/* ══════════ LANGUAGE + TRANSCRIPT ══════════ */}
-        <div className="sl-bottom">
-          {/* Language toggle */}
-          <div className="sl-lang-row">
-            <span className="sl-lang-label">Language</span>
-            <div className="sl-lang-toggle">
-              <button
-                id="lang-ta"
-                className={`sl-lang-btn ${lang === 'ta-IN' ? 'active' : ''}`}
-                onClick={() => { stopListening(); setLang('ta-IN') }}
-                disabled={phase === 'listening' || timerOn}
-                title="தமிழ் (Tamil)"
-              >
-                தமிழ்
-              </button>
-              <button
-                id="lang-en"
-                className={`sl-lang-btn ${lang === 'en-IN' ? 'active' : ''}`}
-                onClick={() => { stopListening(); setLang('en-IN') }}
-                disabled={phase === 'listening' || timerOn}
-                title="English"
-              >
-                English
-              </button>
-            </div>
-          </div>
+                    {Array.isArray(analysis.nextSteps) && analysis.nextSteps.length > 0 && (
+                      <div className="sl-analysis-section">
+                        <div className="sl-analysis-sec-title">
+                          <i className="bi bi-check2-circle" /> Recommended Next Steps
+                        </div>
+                        <ul className="sl-analysis-steps">
+                          {analysis.nextSteps.map((s, idx) => (
+                            <li key={idx} className="sl-analysis-step-item">
+                              <i className="bi bi-arrow-right-short" />
+                              <span>{s}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
 
-          {/* Speech error */}
-          {srError && (
-            <div className="sl-error">
-              <i className="bi bi-exclamation-circle me-2" />{srError}
-            </div>
-          )}
+                    {Array.isArray(analysis.tags) && analysis.tags.length > 0 && (
+                      <div className="sl-analysis-section">
+                        <div className="sl-analysis-sec-title">
+                          <i className="bi bi-tags" /> Skill & Tech Tags
+                        </div>
+                        <div className="sl-analysis-tags-wrap">
+                          {analysis.tags.map((tag, idx) => (
+                            <span key={idx} className="sl-analysis-tag">#{tag}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
-          {/* Log save error */}
-          {saveError && (
-            <div className="sl-error">
-              <i className="bi bi-exclamation-triangle me-2" />Save error: {saveError}
-            </div>
-          )}
-
-          {/* Web Speech API browser check */}
-          {!isSupported && (
-            <div className="sl-error">
-              <i className="bi bi-exclamation-triangle me-2" />
-              Web Speech API requires <strong>Google Chrome</strong>.
-            </div>
-          )}
-
-          {/* Transcript area */}
-          <div
-            className="sl-transcript"
-            id="transcript-area"
-            aria-live="polite"
-            aria-label="Your spoken response"
-          >
-            {lines.length === 0 && !interim ? (
-              <p className="sl-transcript-placeholder">Your verbatim responses will appear here</p>
-            ) : (
-              <>
-                {lines.map((l, i) => (
-                  <p key={l.ts} className="sl-transcript-line">
-                    <span className="sl-line-num">{i + 1}</span>
-                    {l.text}
-                  </p>
-                ))}
-                {interim && (
-                  <p className="sl-transcript-interim">{interim}</p>
+                    {analysis.feedback && (
+                      <div className="sl-analysis-feedback">
+                        "{analysis.feedback}"
+                      </div>
+                    )}
+                  </div>
+                ) : analysisError ? (
+                  <div className="sl-error">
+                    <i className="bi bi-exclamation-triangle me-2" />
+                    {analysisError}
+                    <div className="mt-2">
+                      <button
+                        className="sl-analysis-btn"
+                        onClick={() => runAnalysis(log, savedResult.id)}
+                      >
+                        Try Again
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    className="sl-analysis-btn"
+                    onClick={() => runAnalysis(log, savedResult.id)}
+                  >
+                    <i className="bi bi-stars" /> Generate AI Insights
+                  </button>
                 )}
-              </>
+              </div>
             )}
-          </div>
-        </div>
 
-        {/* ══════════ DONE STATE ══════════ */}
-        {isDone && (
-          <div className="sl-done-bar">
-            <span>
-              {timeLeft === 0 ? "⏰ Time's up!" : '✅ Log recorded and saved!'}
-            </span>
-            <button id="btn-reset" className="sl-reset-btn" onClick={handleReset}>
-              <i className="bi bi-arrow-counterclockwise me-1" />New log
-            </button>
+            {/* Restart button */}
+            {isDone && (
+              <div className="text-center mt-3 mb-2">
+                <button id="btn-reset" className="sl-finish-btn" onClick={handleReset}>
+                  <i className="bi bi-arrow-counterclockwise me-1" />Start a new log
+                </button>
+              </div>
+            )}
           </div>
         )}
 
       </div>
-
-      {/* ══════════ OPENAI SETTINGS MODAL ══════════ */}
-      {showKeyModal && (
-        <div className="sl-modal-overlay" onClick={() => setShowKeyModal(false)}>
-          <div className="sl-modal-card" onClick={e => e.stopPropagation()}>
-            <div className="sl-modal-title">
-              <i className="bi bi-robot text-primary" /> OpenAI API Settings
-            </div>
-            <p className="sl-modal-sub">
-              Enter your <code>OPENAI_API_KEY</code> to enable live GPT-4o-mini follow-up questions and intelligent post-session engineering analysis reports.
-              If omitted, SpeakLog will use its smart context-aware fallback questions and heuristic insights automatically.
-            </p>
-            <input
-              type="password"
-              className="sl-modal-input"
-              placeholder="sk-proj-..."
-              value={tempKey}
-              onChange={e => setTempKey(e.target.value)}
-            />
-            <div className="sl-modal-actions">
-              <button
-                className="sl-cancel-btn"
-                onClick={() => setShowKeyModal(false)}
-              >
-                Close
-              </button>
-              <button
-                className="sl-post-btn"
-                style={{ padding: '.5rem 1rem' }}
-                onClick={handleSaveKey}
-              >
-                Save Key
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

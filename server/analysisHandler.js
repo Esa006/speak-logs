@@ -33,7 +33,7 @@ function getFallbackAnalysis({ log = {}, language = 'en-IN' }) {
     feedback: isTamil
       ? 'தொடர்ந்து முயற்சி செய்யுங்கள்! பிழைகளை ஆராய்வது ஒரு நல்ல பொறியாளரின் முக்கிய அடையாளம்.'
       : 'Solid effort today. Diagnosing blockers systematically will make your next iteration much faster!',
-    note: 'Provide an OPENAI_API_KEY in .env.local or UI Settings to enable live GPT-4o-mini deep analysis.',
+    note: 'Provide OPENAI_API_KEY in environment variables to enable live GPT-4o-mini deep analysis.',
   }
 }
 
@@ -43,10 +43,9 @@ function getFallbackAnalysis({ log = {}, language = 'en-IN' }) {
 export async function handleAnalysis({
   log = {},
   language = 'en-IN',
-  customApiKey = '',
   envApiKey = '',
 }) {
-  const apiKey = customApiKey || envApiKey || process.env.OPENAI_API_KEY || process.env.VITE_OPENAI_API_KEY
+  const apiKey = envApiKey || process.env.OPENAI_API_KEY
   const isTamil = (language || '').toLowerCase().startsWith('ta')
 
   const triedCombined = [log.tried, log.triedFollowUp].filter(Boolean).join('\nFollow-up: ')

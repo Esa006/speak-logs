@@ -3,7 +3,7 @@ import { useSpeechRecognition }  from '../../hooks/useSpeechRecognition'
 import { useSpeechSynthesis }    from '../../hooks/useSpeechSynthesis'
 import {
   PHASES, QUESTIONS, buildFollowUp,
-  formatLog, isConfirmation, isCancellation,
+  isConfirmation, isCancellation,
 } from '../../utils/conversationFlow'
 import { saveLog as postLog } from '../../utils/logService'
 import MicButton      from './MicButton'
@@ -12,18 +12,6 @@ import LogPreview     from './LogPreview'
 import StatusBadge    from './StatusBadge'
 import LanguageToggle from './LanguageToggle'
 import styles from './VoiceAgent.module.css'
-
-const PHASE_ORDER = [
-  PHASES.INTRO,
-  PHASES.WHAT_TRIED,
-  PHASES.FOLLOWUP_1,
-  PHASES.WHAT_BROKE,
-  PHASES.FOLLOWUP_2,
-  PHASES.WHY,
-  PHASES.FOLLOWUP_3,
-  PHASES.CONFIRM,
-  PHASES.DONE,
-]
 
 export default function VoiceAgent() {
   const [lang, setLang]           = useState('en-IN')
@@ -40,7 +28,7 @@ export default function VoiceAgent() {
   }, [])
 
   /* ── Speech synthesis ── */
-  const { speak, cancel } = useSpeechSynthesis()
+  const { speak } = useSpeechSynthesis()
 
   const agentSay = useCallback((text, afterSpeak) => {
     addMessage('agent', text)

@@ -1,4 +1,4 @@
-import { handleAnalysis } from '../server/analysisHandler.js'
+import { handleLogSave, handleProofRetry } from '../server/logHandler.js'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -10,10 +10,23 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {})
-    const result = await handleAnalysis({
+    
+    // Check if this is a retry action
+    if (body.action === 'retry-proof' || body.retry) {
+      const retryResult = await handleProofRetry({
+        logId: body.logId,
+        log: body.log || {},
+        language: body.language || 'en-IN',
+      })
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify(retryResult))
+      return
+    }
+
+    const result = await handleLogSave({
       log: body.log || {},
       language: body.language || 'en-IN',
-      envApiKey: process.env.OPENAI_API_KEY,
     })
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/json')

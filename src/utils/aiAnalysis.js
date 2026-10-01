@@ -1,16 +1,14 @@
 /**
  * aiAnalysis.js
  * Client utility to fetch an AI post-session analysis report from /api/analyze.
+ * Secure architecture: Browser -> Vercel Serverless API -> OpenAI
+ * API Key is stored only as OPENAI_API_KEY inside server environment variables.
  */
-import { getStoredApiKey } from './aiFollowUp'
 
 export async function requestAnalysis({
   log,
   language = 'en-IN',
-  customApiKey = '',
 }) {
-  const effectiveKey = customApiKey || getStoredApiKey()
-
   try {
     const res = await fetch('/api/analyze', {
       method: 'POST',
@@ -18,7 +16,6 @@ export async function requestAnalysis({
       body: JSON.stringify({
         log,
         language,
-        customApiKey: effectiveKey,
       }),
     })
 

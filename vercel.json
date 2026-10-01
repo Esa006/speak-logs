@@ -4,6 +4,7 @@
   "rewrites": [
     { "source": "/api/follow-up", "destination": "/api/follow-up.js" },
     { "source": "/api/analyze", "destination": "/api/analyze.js" },
+    { "source": "/api/logs", "destination": "/api/logs.js" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
