@@ -70,12 +70,15 @@ export default function SpeakLog() {
   const phaseRef       = useRef(phase)
   const answerRef      = useRef(null)
   const saveLogRef     = useRef(null)
+  const agentSpeakRef  = useRef(null)  // always-current ref to avoid timer re-fires
+  const langRef        = useRef(lang)  // always-current ref for lang inside timer
 
   useEffect(() => {
     convPhaseRef.current = convPhase
     logRef.current       = log
     phaseRef.current     = phase
-  }, [convPhase, log, phase])
+    langRef.current      = lang
+  }, [convPhase, log, phase, lang])
 
   const isSupported = 'SpeechRecognition' in window || 'webkitSpeechRecognition' in window
   const greeting    = GREETINGS[lang] || GREETINGS['en-IN']
@@ -91,6 +94,9 @@ export default function SpeakLog() {
   }
 
   /* ── Helper: Agent speaks text with browser speechSynthesis ── */
+  // Speak text reliably in Tamil or English.
+  // Fixes: (1) async voice loading, (2) Chrome 250-char silent-cutoff bug,
+  // (3) better Tamil voice selection with fallback.
   const agentSpeak = useCallback((text, onDone) => {
     if (!('speechSynthesis' in window)) {
       if (onDone) onDone()
@@ -101,26 +107,90 @@ export default function SpeakLog() {
     setAgentText(text)
     setPhase('speaking')
 
-    const u = new SpeechSynthesisUtterance(text)
-    u.lang  = lang
-    u.rate  = 0.95
+    // Chrome has a ~250-char silent-cutoff bug on long utterances.
+    // Split on sentence boundaries to avoid it.
+    function splitIntoChunks(str, maxLen = 220) {
+      const sentences = str.match(/[^.!?।]+[.!?।]?/g) || [str]
+      const chunks = []
+      let current = ''
+      for (const s of sentences) {
+        if ((current + s).length > maxLen && current) {
+          chunks.push(current.trim())
+          current = s
+        } else {
+          current += s
+        }
+      }
+      if (current.trim()) chunks.push(current.trim())
+      return chunks.length ? chunks : [str]
+    }
 
+    function pickVoice(voices) {
+      // 1. Exact lang match (e.g. ta-IN)
+      let v = voices.find(vx => vx.lang === lang)
+      if (v) return v
+      // 2. Language prefix match (e.g. ta)
+      v = voices.find(vx => vx.lang.startsWith(lang.split('-')[0]))
+      if (v) return v
+      // 3. For Tamil, try any voice that has 'tamil' in the name
+      if (lang.startsWith('ta')) {
+        v = voices.find(vx => /tamil/i.test(vx.name))
+        if (v) return v
+      }
+      return null
+    }
+
+    function speakChunks(chunks, voice) {
+      if (!chunks.length) {
+        setAgentText('')
+        if (onDone) onDone()
+        return
+      }
+      const [head, ...tail] = chunks
+      const u = new SpeechSynthesisUtterance(head)
+      u.lang = lang
+      u.rate = lang.startsWith('ta') ? 0.88 : 0.95
+      if (voice) u.voice = voice
+
+      u.onend = () => speakChunks(tail, voice)
+      u.onerror = (err) => {
+        // 'interrupted' fires when we .cancel() ourselves — not a real error
+        if (err.error === 'interrupted') return
+        console.warn('speechSynthesis error:', err.error, head)
+        speakChunks(tail, voice)
+      }
+      window.speechSynthesis.speak(u)
+      synthRef.current = u
+
+      // Chrome TTS keepalive: Chrome pauses speechSynthesis after ~15s
+      // unless we periodically call resume().
+      setTimeout(() => {
+        if (window.speechSynthesis.paused) window.speechSynthesis.resume()
+      }, 1000)
+    }
+
+    function doSpeak() {
+      const voices = window.speechSynthesis.getVoices()
+      const voice  = pickVoice(voices)
+      const chunks = splitIntoChunks(text)
+      speakChunks(chunks, voice)
+    }
+
+    // Voices may not be loaded on first call — wait for them.
     const voices = window.speechSynthesis.getVoices()
-    const match = voices.find(v => v.lang === lang || v.lang.startsWith(lang.split('-')[0]))
-    if (match) u.voice = match
-
-    u.onend = () => {
-      setAgentText('')
-      if (onDone) onDone()
+    if (voices.length > 0) {
+      doSpeak()
+    } else {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.onvoiceschanged = null
+        doSpeak()
+      }
+      // Fallback if onvoiceschanged never fires (some browsers)
+      setTimeout(() => {
+        window.speechSynthesis.onvoiceschanged = null
+        doSpeak()
+      }, 1200)
     }
-    u.onerror = (err) => {
-      console.warn('speechSynthesis error:', err)
-      setAgentText('')
-      if (onDone) onDone()
-    }
-
-    synthRef.current = u
-    window.speechSynthesis.speak(u)
   }, [lang])
 
   /* ── Helper: Start speech recognition ── */
@@ -141,32 +211,45 @@ export default function SpeakLog() {
     const r  = new SR()
     r.lang           = lang
     r.interimResults = true
-    r.continuous     = false
+    // Tamil speakers pause mid-sentence; continuous=true prevents premature cutoff.
+    r.continuous     = lang.startsWith('ta')
 
-    let capturedTranscript = ''
+    let capturedTranscript = '' // accumulates ALL final segments
+    let autoStopTimer = null
+
+    // For Tamil continuous mode: auto-stop after 10s of silence
+    function resetAutoStop() {
+      if (!lang.startsWith('ta')) return
+      clearTimeout(autoStopTimer)
+      autoStopTimer = setTimeout(() => {
+        try { r.stop() } catch {}
+      }, 10000)
+    }
 
     r.onstart = () => {
       setPhase('listening')
       setInterim('')
+      resetAutoStop()
     }
 
     r.onresult = (e) => {
-      let live = '', final = ''
+      let live = ''
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const t = e.results[i][0].transcript
         if (e.results[i].isFinal) {
-          final += t
+          // Accumulate — don't overwrite
+          capturedTranscript += (capturedTranscript ? ' ' : '') + t.trim()
+          resetAutoStop() // reset silence timer on each final segment
         } else {
           live += t
         }
       }
-      setInterim(live)
-      if (final) {
-        capturedTranscript = final.trim()
-      }
+      // Show what we've captured so far + current interim
+      setInterim((capturedTranscript ? capturedTranscript + ' ' : '') + live)
     }
 
     r.onerror = (e) => {
+      clearTimeout(autoStopTimer)
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         const msg = lang === 'ta-IN'
           ? 'தயவுசெய்து உங்கள் உலாவியில் மைக்ரோஃபோன் அணுகலை அனுமதிக்கவும்.'
@@ -180,6 +263,7 @@ export default function SpeakLog() {
     }
 
     r.onend = () => {
+      clearTimeout(autoStopTimer)
       setInterim('')
       const text = capturedTranscript.trim()
       if (text) {
@@ -206,33 +290,33 @@ export default function SpeakLog() {
   }, [])
 
   /* ── 2-minute Countdown timer ── */
+  // Only depends on timerOn — uses refs for lang/agentSpeak to avoid restarting
+  // the interval when the user switches language mid-session.
   useEffect(() => {
-    if (timerOn && convPhase !== PHASES.DONE) {
-      timerRef.current = setInterval(() => {
-        setTimeLeft(t => {
-          if (t <= 1) {
-            clearInterval(timerRef.current)
-            try { recognitionRef.current?.stop() } catch {}
-            // Time reached ~2 minutes: finalize transcript and guide to confirmation review
-            setConvPhase(prev => {
-              if (prev !== PHASES.DONE && prev !== PHASES.CONFIRM) {
-                setPhase('confirming')
-                const timeoutMsg = lang === 'ta-IN'
-                  ? 'இரண்டு நிமிடங்கள் முடிந்தது! உங்கள் log தயாராக உள்ளது. இதை save செய்யவா?'
-                  : 'Two minutes are up! Here is your daily log. Review your responses below.'
-                agentSpeak(timeoutMsg)
-                return PHASES.CONFIRM
-              }
-              return prev
-            })
-            return 0
-          }
-          return t - 1
-        })
-      }, 1000)
-    }
+    if (!timerOn) return
+    timerRef.current = setInterval(() => {
+      setTimeLeft(t => {
+        if (t <= 1) {
+          clearInterval(timerRef.current)
+          try { recognitionRef.current?.stop() } catch {}
+          setConvPhase(prev => {
+            if (prev !== PHASES.DONE && prev !== PHASES.CONFIRM) {
+              setPhase('confirming')
+              const timeoutMsg = langRef.current === 'ta-IN'
+                ? 'இரண்டு நிமிடங்கள் முடிந்தது! உங்கள் log தயாராக உள்ளது. இதை save செய்யவா?'
+                : 'Two minutes are up! Here is your daily log. Review your responses below.'
+              agentSpeakRef.current?.(timeoutMsg)
+              return PHASES.CONFIRM
+            }
+            return prev
+          })
+          return 0
+        }
+        return t - 1
+      })
+    }, 1000)
     return () => clearInterval(timerRef.current)
-  }, [timerOn, convPhase, lang, agentSpeak])
+  }, [timerOn])
 
   /* ── Finish Log Button Handler ── */
   const handleFinishLog = useCallback(() => {
@@ -480,6 +564,10 @@ export default function SpeakLog() {
     saveLogRef.current = triggerSaveLog
   }, [triggerSaveLog])
 
+  useEffect(() => {
+    agentSpeakRef.current = agentSpeak
+  }, [agentSpeak])
+
   /* ── Mic Tap Handler ── */
   function handleMicTap() {
     if (convPhase === PHASES.DONE) return
@@ -490,8 +578,12 @@ export default function SpeakLog() {
     }
 
     if (phase === 'speaking') {
+      // Cancel agent speech and immediately start listening
       window.speechSynthesis?.cancel()
       setAgentText('')
+      setPhase('idle') // ← must reset phase so startListening() works
+      startListening()
+      return
     }
 
     if (convPhase === PHASES.INTRO || !timerOn) {
@@ -831,7 +923,15 @@ export default function SpeakLog() {
                     {[...Array(9)].map((_, i) => <span key={i} />)}
                   </div>
                 )}
+
+                {/* Tamil continuous mode hint */}
+                {phase === 'listening' && lang === 'ta-IN' && (
+                  <span className="sl-mic-hint" style={{ color: '#fca5a5', fontSize: '0.76rem', marginTop: '0.25rem' }}>
+                    பேசி முடிந்ததும் ■ அழுத்தவும்
+                  </span>
+                )}
               </div>
+
 
               {/* Agent's current question */}
               <div className="sl-speech-quote">
@@ -1102,7 +1202,7 @@ export default function SpeakLog() {
 
                     {analysis.feedback && (
                       <div className="sl-analysis-feedback">
-                        "{analysis.feedback}"
+                        “{analysis.feedback}”
                       </div>
                     )}
                   </div>

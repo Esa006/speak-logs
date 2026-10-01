@@ -4,7 +4,6 @@ export default function MicButton({ isListening, onStart, onStop, disabled }) {
   return (
     <div className={styles.wrapper}>
       <button
-        id="mic-btn"
         className={`${styles.mic} ${isListening ? styles.active : ''}`}
         onClick={isListening ? onStop : onStart}
         disabled={disabled}
