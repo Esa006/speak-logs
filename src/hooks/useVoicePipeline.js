@@ -138,7 +138,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
 
     /**
      * finishListening — the app (not the browser) decides the answer is complete.
-     * Triggered by the silence debounce, NOT by onend.
+     * Triggered by the silence debounce, NOT by premature onend.
      */
     const finishListening = () => {
       clearSilenceTimer()
@@ -147,11 +147,14 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       try { r.stop() } catch {}
 
       const text = capturedTranscript.trim()
-      if (!text) { setVoiceState(VOICE_STATE.IDLE); return }
+      if (!text) {
+        setVoiceState(VOICE_STATE.LISTENING)
+        return
+      }
 
       if (lastTranscriptRef.current === text) {
         console.log('[VoicePipeline] Duplicate transcript ignored:', text)
-        setVoiceState(VOICE_STATE.IDLE)
+        setVoiceState(VOICE_STATE.LISTENING)
         return
       }
       lastTranscriptRef.current = text
@@ -160,8 +163,8 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
     }
 
     /**
-     * resetSilenceTimer — called after every final result.
-     * Mid-speech interim results clear the timer to protect natural pauses.
+     * resetSilenceTimer — called after ANY recognized speech.
+     * Waits SILENCE_MS after the user stops speaking before finalizing.
      */
     const resetSilenceTimer = () => {
       clearSilenceTimer()
@@ -178,26 +181,41 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
 
     r.onresult = (e) => {
       if (recognitionRef.current !== r) return
+
+      let finals = ''
       let live = ''
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const result = e.results[i]
-        const t      = result[0].transcript
+
+      // Full sweep of results: preserves confirmed text and active interim
+      for (let i = 0; i < e.results.length; i++) {
+        const item = e.results[i]
+        const t = item[0]?.transcript || ''
         if (!t.trim()) continue
-        hasSpeech = true
-        if (result.isFinal) {
-          capturedTranscript += (capturedTranscript ? ' ' : '') + t.trim()
-          resetSilenceTimer()
+
+        if (item.isFinal) {
+          finals += (finals ? ' ' : '') + t.trim()
         } else {
           live += t
-          // Interim flowing → user is mid-sentence → cancel silence timer.
-          clearSilenceTimer()
         }
       }
-      setInterim((capturedTranscript ? capturedTranscript + ' ' : '') + live)
+
+      const full = (finals + (finals && live ? ' ' : '') + live).trim()
+      capturedTranscript = full
+      hasSpeech = !!full
+
+      setInterim(full)
+
+      // CRITICAL: Schedule silence timer whenever speech is heard.
+      // Guarantees finishListening fires even if Chrome hasn't finalized last chunk.
+      if (hasSpeech) {
+        resetSilenceTimer()
+      }
     }
 
     r.onerror = (e) => {
       if (recognitionRef.current !== r) return
+      // 'no-speech' is a normal Chrome timeout when waiting for user — ignore
+      if (e.error === 'no-speech') return
+
       clearSilenceTimer()
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         const msg = langRef.current === 'ta-IN'
@@ -205,34 +223,38 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
           : 'Please allow microphone access.'
         setSrError(msg)
         onError?.(msg)
-      } else if (e.error !== 'no-speech') {
+        setVoiceState(VOICE_STATE.IDLE)
+      } else {
         setSrError(`Microphone notice: ${e.error}`)
       }
-      setVoiceState(VOICE_STATE.IDLE)
     }
 
     r.onend = () => {
-      // Guard 1: stale instance — a newer session has taken over.
       if (recognitionRef.current !== r) return
       clearSilenceTimer()
-      setInterim('')
 
-      // Guard 2: finishListening() already fired via silence debounce.
-      if (stoppedManually) return
+      // If finished cleanly via debounce, stop here
+      if (stoppedManually) {
+        setInterim('')
+        return
+      }
 
-      // Browser ended unexpectedly. Deliver transcript once if we have it.
+      // If user had spoken, finalize what we captured
       const text = capturedTranscript.trim()
       if (text) {
-        if (lastTranscriptRef.current === text) {
-          console.log('[VoicePipeline] Duplicate (onend) ignored:', text)
-          setVoiceState(VOICE_STATE.IDLE)
-          return
-        }
         stoppedManually = true
         lastTranscriptRef.current = text
+        setInterim('')
         setVoiceState(VOICE_STATE.PROCESSING)
         onTranscript?.(text)
-      } else {
+        return
+      }
+
+      // If Chrome closed due to silence timeout while still in LISTENING,
+      // seamlessly keep the microphone alive
+      try {
+        r.start()
+      } catch {
         setVoiceState(VOICE_STATE.IDLE)
       }
     }
