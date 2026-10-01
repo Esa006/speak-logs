@@ -187,6 +187,41 @@ This build log captures the technical journey: what we attempted, what failed in
 
 ---
 
+### Milestone 8: Lifecycle Architecture, Duplicate API Calls & TTS Idempotency
+
+#### 1. What We Tried
+- Connected `onTranscript` directly to an `async` state transition function that fetched follow-ups and called `agentSpeak`.
+- Allowed SpeechRecognition to restart whenever `onend` fired.
+
+#### 2. What Broke
+- **Duplicate API Invocations**: Parallel `onTranscript` events triggered duplicate `POST /api/follow-up` calls, generating multiple competing AI questions for the same answer.
+- **Acoustic Feedback Loop (AI Talking to Itself)**: SpeechRecognition restarted while TTS was actively speaking. The microphone transcribed the AI's question, treating it as a student answer and recursively querying OpenAI again!
+- **Repeating TTS Utterances**: React re-renders and unkeyed `agentSpeak` calls queued the same question into `window.speechSynthesis` multiple times.
+- **Stale Async Responses**: When network responses arrived out of order, older responses overwrote newer conversational turns.
+
+#### 3. What We Decided & Why
+- **`processingAnswerRef` Async Lock**:
+  - Gates `handleStudentAnswer` — blocks duplicate concurrent executions until the full conversational turn and TTS finish.
+- **`requestIdRef` Request Versioning**:
+  - Increments a monotonic integer on every AI request (`++requestIdRef.current`).
+  - Stale network responses are discarded immediately (`thisReq !== requestIdRef.current`).
+- **`spokenResponseIdRef` TTS Idempotency Guard**:
+  - Assigns a unique response ID (`resp_${phase}_${Date.now()}`) to each generated question.
+  - Before speaking, drops duplicate playback requests if `spokenResponseIdRef.current === responseId`.
+- **Strict Half-Duplex Audio & Acoustic Grace Window**:
+  - Sets `isSpeakingRef.current = true` and immediately stops microphone recognition when AI speaks.
+  - Blocks `startListening()` from executing while `isSpeakingRef.current` is true.
+  - Adds a 200ms post-speech acoustic buffer before microphone re-opens, ensuring room echo is completely dead.
+- **Structured Production Logging**:
+  - `[Speech] recognition started`
+  - `[Speech] recognition ended`
+  - `[Speech] interim transcript:`
+  - `[Speech] final transcript:`
+  - `[AI] request started` / `request completed`
+  - `[TTS] speaking response ID:` / `duplicate prevented:`
+
+---
+
 ## 📊 Summary of Architectural Decisions
 
 | Area | What Was Tried | What Broke | Final Decision | Rationale |
