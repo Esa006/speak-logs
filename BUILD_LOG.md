@@ -236,7 +236,45 @@ This build log captures the technical journey: what we attempted, what failed in
 
 ---
 
+## 💡 Engineering Reflections
+
+### 1. What Was the Hard Part?
+The true bottleneck was **orchestrating browser Web Audio hardware, asynchronous React state, and two uncooperative browser APIs (`SpeechRecognition` & `SpeechSynthesis`)** without infinite loops or audio cutoffs:
+1. **Acoustic Feedback Loop**: Browser `SpeechRecognition` was picking up the AI's own speaker output, transcribing it as an answer, and looping recursively. Fixed via **Strict Half-Duplex Gate** (killing the mic before TTS + 200ms room decay buffer).
+2. **Streaming Buffer Stutter**: Chrome's continuous ASR buffer re-emits rolling 500ms audio chunks, duplicating words across boundaries (`"today today today create"`). Fixed via sliding-window junction deduplication (`mergeWithOverlap` + `removeConsecutiveDuplicates`).
+3. **V8 Garbage Collection Drops**: Chrome destroys `SpeechSynthesisUtterance` mid-sentence if not referenced in JavaScript, freezing the app in `SPEAKING` state. Fixed by pinning active utterances in an `activeUtterancesRef = new Set()` until `.onend` fires.
+4. **Concurrent Async Race Conditions**: Rapid interim speech events triggered multiple simultaneous OpenAI API requests. Fixed by combining an atomic boolean mutex lock (`processingAnswerRef`) with monotonic request counters (`requestIdRef`).
+
+### 2. What Are We Assuming?
+- **Chromium Environment**: We assume users access SpeakLog via Chrome, Edge, or Brave, where `webkitSpeechRecognition` is natively supported.
+- **Half-Duplex Audio Necessity**: We assume laptop speakers lack browser-accessible acoustic echo cancellation, requiring physical mic shutdowns during AI speech.
+- **Pacing & Agency**: We assume 2.0s of continuous silence signals thought completion, but always provide an instant manual Stop button ("■") so fast speakers never feel blocked.
+- **Bilingual Tanglish**: We assume Tamil developers mix English technical keywords (API, JWT, deploy, break) with Tamil verbs and grammar.
+- **OS Voice Fragmentation**: We assume standard Windows installs may lack native Tamil (`ta-IN`) voice packs, necessitating a tiered fallback (`ta-IN` $\rightarrow$ `en-IN` $\rightarrow$ default).
+- **100% Verbatim Priority**: We assume evaluators require raw, unpolished student speech rather than AI-summarized text.
+- **Client Security**: We assume the browser environment is hostile; all secret keys remain isolated on backend endpoints.
+
+### 3. Key Learnings (Brief & Actionable)
+1. **Strict Half-Duplex Audio**: Always kill the mic before TTS speaks and wait 200ms room buffer before re-opening to prevent echo loops.
+2. **No `setTimeout` Band-Aids**: Audio pipelines require atomic mutex locks (`useRef`) and monotonic counters (`requestIdRef`) to survive variable latency.
+3. **Pin Utterances in Memory**: Prevent V8 garbage collection drops by holding active utterances in a `Set` until `.onend` fires.
+4. **Deduplicate Streaming Speech**: Never blindly append speech segments; merge using a sliding-window overlap algorithm.
+5. **Tiered Voice Fallbacks**: Always provide graceful fallbacks (`ta-IN` $\rightarrow$ `en-IN` $\rightarrow$ system default) for missing OS voice packs.
+6. **Balanced 2.0s Debounce + Manual Stop**: Balance automation with user agency so both fast and reflective speakers feel comfortable.
+
+### 4. What Did You Notice?
+- **Chrome's Rolling Audio Buffer**: `webkitSpeechRecognition` with `continuous: true` re-feeds trailing ~500ms audio chunks across events, producing natural stutter (`"today today today"`) unless stripped via sliding-window junction matching.
+- **V8 GC Destroys Active Utterances**: JavaScript garbage collection will silently destroy an in-flight `SpeechSynthesisUtterance` mid-speech, cutting audio off and freezing `onend` unless explicitly retained in a `Set`.
+- **Acoustic Echo Is 100% Lethal**: Laptop microphones pick up laptop speakers with remarkable fidelity. Without strict half-duplex cutoff, the AI transcribes its own question as an answer and interviews itself recursively.
+- **Severe OS Voice Fragmentation**: Windows often lacks Tamil (`ta-IN`) voice engines by default, causing silent lockups unless dynamically cascaded to `en-IN` or default system voices.
+- **The 1.2s "Thinking Pause"**: Developers pause to think while explaining bugs. A 1.0s silence timer cuts them off mid-sentence; 3.0s feels laggy. 2.0s is the sweet spot when backed by a manual Stop button ("■").
+- **Tanglish Is the Natural Standard**: Tamil developers naturally code-switch with English tech terms ("JWT", "endpoint", "render", "state"). Preserving raw alphanumeric tokens alongside Tamil script is essential.
+- **Verbatim Text Builds Real Trust**: Users get anxious when LLMs sanitize or rewrite their thoughts. Seeing 100% exact raw words captured live on screen dramatically increases developer confidence.
+
+---
+
 ## 🏁 Verification Record
 - **Automated Pipeline Tests**: `npm run verify` passes 100% across all 9 stages.
 - **Production Build**: `npm run build` generates clean bundle with 0 errors.
 - **Git History**: Clean, atomic commits documenting each stage of development.
+
