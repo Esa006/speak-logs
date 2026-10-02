@@ -848,6 +848,101 @@ body {
   cursor: not-allowed;
 }
 
+/* ══════════════════════════════════════
+   CONFIRM ACTIONS — Cancel + Post buttons
+══════════════════════════════════════ */
+.sl-confirm-hint {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  margin-top: 1.1rem;
+  margin-bottom: .5rem;
+  font-size: .8rem;
+  color: var(--muted-2);
+  font-weight: 500;
+}
+
+.sl-confirm-hint .bi {
+  color: var(--accent);
+  font-size: .85rem;
+}
+.sl-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-top: 1.2rem;
+  flex-wrap: nowrap;
+}
+
+.sl-cancel-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  padding: .7rem 1.3rem;
+  border-radius: 12px;
+  border: 1px solid var(--border-2);
+  background: var(--card-2);
+  color: var(--muted-2);
+  font-size: .9rem;
+  font-weight: 600;
+  font-family: 'Inter', 'Noto Sans Tamil', sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--ease);
+  letter-spacing: .2px;
+}
+
+.sl-cancel-btn:hover:not(:disabled) {
+  border-color: var(--red);
+  color: #fca5a5;
+  background: rgba(239, 68, 68, .08);
+}
+
+.sl-cancel-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.sl-save-btn {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  padding: .75rem 1.5rem;
+  border-radius: 12px;
+  border: none;
+  background: linear-gradient(135deg, var(--green), #15803d);
+  color: #fff;
+  font-size: .95rem;
+  font-weight: 700;
+  font-family: 'Inter', 'Noto Sans Tamil', sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 4px 18px rgba(34, 197, 94, .35);
+  transition: all var(--ease);
+  letter-spacing: .3px;
+}
+
+.sl-save-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(34, 197, 94, .5);
+  background: linear-gradient(135deg, #4ade80, #16a34a);
+}
+
+.sl-save-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.sl-save-btn:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+
 /* Modal overlay */
 .sl-modal-overlay {
   position: fixed;

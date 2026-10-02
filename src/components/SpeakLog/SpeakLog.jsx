@@ -744,19 +744,26 @@ export default function SpeakLog() {
               </div>
 
               {convPhase === PHASES.CONFIRM && (
-                <div className="sl-confirm-actions">
-                  <div className="w-100 text-center mb-2 text-muted small">
-                    <i className="bi bi-mic me-1" />
-                    {lang === 'ta-IN' ? 'குரல் மூலம் உறுதிப்படுத்த "yes, post it" அல்லது "சரி போஸ்ட் பண்ணு" என்று கூறவும்' : 'Speak "yes, post it" to confirm by voice'}
+                <>
+                  <p className="sl-confirm-hint">
+                    <i className="bi bi-mic-fill" />
+                    {lang === 'ta-IN'
+                      ? '"சரி போஸ்ட் பண்ணு" அல்லது "yes, post it" என்று கூறவும்'
+                      : 'Say "yes, post it" to confirm by voice'}
+                  </p>
+                  <div className="sl-confirm-actions">
+                    <button id="btn-cancel-log" className="sl-cancel-btn" onClick={handleReset} disabled={isSaving}>
+                      <i className="bi bi-x-circle" />
+                      {lang === 'ta-IN' ? 'ரத்து' : 'Cancel'}
+                    </button>
+                    <button id="btn-save-log" className="sl-save-btn" onClick={triggerSaveLog} disabled={isSaving}>
+                      <i className={`bi ${isSaving ? 'bi-arrow-repeat sl-spin' : 'bi-cloud-arrow-up-fill'}`} />
+                      {isSaving
+                        ? (lang === 'ta-IN' ? 'பதிவிடுகிறது...' : 'Posting...')
+                        : (lang === 'ta-IN' ? 'Proof-ல் Post செய்' : 'Post to Proof')}
+                    </button>
                   </div>
-                  <button id="btn-cancel-log" className="sl-cancel-btn" onClick={handleReset} disabled={isSaving}>
-                    <i className="bi bi-x-circle me-1" />{lang === 'ta-IN' ? 'ரத்து செய்' : 'Cancel'}
-                  </button>
-                  <button id="btn-save-log" className="sl-save-btn" onClick={triggerSaveLog} disabled={isSaving}>
-                    <i className="bi bi-cloud-arrow-up-fill me-1" />
-                    {isSaving ? (lang === 'ta-IN' ? 'போஸ்ட் செய்கிறது...' : 'Posting...') : (lang === 'ta-IN' ? 'Proof-ல் Post செய்' : 'Post to Proof')}
-                  </button>
-                </div>
+                </>
               )}
             </div>
 
