@@ -774,9 +774,22 @@ export default function SpeakLog() {
                 <div className="sl-save-id">Log ID: {savedResult.id}</div>
                 <div className="sl-proof-row">
                   {savedResult.proofSubmitted ? (
-                    <span className="sl-proof-badge success">
-                      <i className="bi bi-patch-check-fill" /> ✓ Submitted successfully to Proof
-                    </span>
+                    <div className="d-flex align-items-center gap-2 flex-wrap">
+                      <span className="sl-proof-badge success">
+                        <i className="bi bi-patch-check-fill" /> ✓ Submitted successfully to Proof
+                      </span>
+                      {savedResult.proofUrl && (
+                        <a
+                          href={savedResult.proofUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="sl-proof-link"
+                          style={{ fontSize: '0.8rem', color: '#60a5fa', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
+                        >
+                          View on Proof <i className="bi bi-box-arrow-up-right" style={{ fontSize: '0.7rem' }} />
+                        </a>
+                      )}
+                    </div>
                   ) : (
                     <>
                       <span className="sl-proof-badge warning">

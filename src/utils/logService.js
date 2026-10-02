@@ -64,6 +64,7 @@ export async function saveLog({
     whyFollowUp,
     analysis,
     proofSubmitted: serverResult?.proofSubmitted ?? true,
+    proofUrl: serverResult?.proofUrl || null,
     proofError: serverResult?.proofError ?? null,
     createdAt: new Date().toISOString(),
   }
@@ -84,6 +85,7 @@ export async function saveLog({
     id: logId,
     saved: true,
     proofSubmitted: entry.proofSubmitted,
+    proofUrl: entry.proofUrl,
     proofError: entry.proofError,
     entry,
   }

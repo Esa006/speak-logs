@@ -55,7 +55,8 @@ async function submitToProofMCP(entry) {
     const data = await response.json().catch(() => null)
 
     if (response.ok && !data?.error) {
-      return { ok: true, proofSubmitted: true, result: data?.result }
+      const proofUrl = data?.result?.content?.[0]?.text?.match(/https?:\/\/[^\s]+/)?.[0] || null
+      return { ok: true, proofSubmitted: true, proofUrl, result: data?.result }
     }
 
     const errMsg = data?.error?.message || (data ? JSON.stringify(data) : `Proof rejected (${response.status})`)
@@ -90,6 +91,7 @@ export async function handleLogSave({ log = {}, language = 'en-IN' }) {
     saved,
     id: entry.id,
     proofSubmitted: proofResult.proofSubmitted,
+    proofUrl: proofResult.proofUrl || null,
     proofError: proofResult.proofSubmitted ? null : proofResult.error,
     entry,
   }
