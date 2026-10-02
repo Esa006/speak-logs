@@ -5,7 +5,6 @@ import './SpeakLog.css'
 import {
   PHASES,
   QUESTIONS,
-  GREETINGS,
   isConfirmation,
   isCancellation,
 } from '../../utils/conversationFlow'
@@ -40,7 +39,6 @@ export default function SpeakLog() {
   const [convPhase, setConvPhase]         = useState(PHASES.INTRO)
   const [timeLeft, setTimeLeft]           = useState(TOTAL_SECONDS)
   const [timerOn, setTimerOn]             = useState(false)
-  const [lines, setLines]                 = useState([])
   const [saveError, setSaveError]         = useState('')
   const [isSaving, setIsSaving]           = useState(false)
 
@@ -92,7 +90,6 @@ export default function SpeakLog() {
   const {
     voiceState,
     interim,
-    agentText,
     srError,
     isSupported,
     startListening,
@@ -263,7 +260,6 @@ export default function SpeakLog() {
     processingAnswerRef.current = true
 
     const currentPhase = convPhaseRef.current
-    setLines(prev => [...prev, { text, ts: Date.now() }])
 
     try {
       if (currentPhase === PHASES.WHAT_TRIED) {

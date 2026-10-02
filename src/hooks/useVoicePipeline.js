@@ -138,7 +138,11 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
   const activeUtterancesRef  = useRef(new Set()) // V8 GC protection
   const cachedVoicesRef      = useRef([])
   const langRef              = useRef(lang)
-  langRef.current = lang
+  const startListeningRef    = useRef(null)
+
+  useEffect(() => {
+    langRef.current = lang
+  }, [lang])
 
   // Pre-load and cache voices on mount so they are available synchronously
   useEffect(() => {
@@ -354,7 +358,7 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       if (!isSpeakingRef.current) {
         console.log('[Speech] restart: session active, restarting clean recognition')
         setTimeout(() => {
-          if (!isSpeakingRef.current) startListening()
+          if (!isSpeakingRef.current) startListeningRef.current?.()
         }, 80)
       } else {
         setVoiceState(VOICE_STATE.IDLE)
@@ -370,6 +374,10 @@ export function useVoicePipeline({ lang, onTranscript, onError, onStateChange } 
       recognitionRunningRef.current = false
     }
   }, [isSupported, onTranscript, onError, setVoiceState])
+
+  useEffect(() => {
+    startListeningRef.current = startListening
+  }, [startListening])
 
   /* ──────────────────────────────────────────────────────────────────────
      agentSpeak  (public)

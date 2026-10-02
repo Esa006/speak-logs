@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
+    "test": "node scripts/verify-pipeline.js",
     "verify": "node scripts/verify-pipeline.js",
     "preview": "vite preview"
   },
