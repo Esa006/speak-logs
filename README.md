@@ -1,157 +1,77 @@
-# SpeakLog (speak-logs)
+﻿# SpeakLog — speak your log
 
-Bilingual voice agent that talks with a student for around 2 minutes about their day and saves their answer as a log on Proof, in their own words.
+**A voice agent that turns two minutes of talking into a student's own log.**
 
-Built for **Vruksha Consultancy** (Chennai) hiring challenge.
-
-### 🎯 Key Requirements Met
-1. **Asks, in Tamil or English**: What did you try? What broke? Why?
-2. **Asks one follow-up** derived specifically from what they just answered.
-3. **Keeps their exact words**: 100% verbatim reflection — strictly zero summarising.
-4. **Posts only after they say "yes, post it"** (or click Post to Proof).
-5. **Deep Tamil Support**: Native `ta-IN` speech recognition, Tamil TTS voice synthesis, Tamil natural follow-ups, and colloquial affirmative matcher (`சரி போஸ்ட் பண்ணு`, `ஆம்`, `ஆமாம்`, `போஸ்ட் பண்ணு`).
-6. **Detailed Build Log**: Read [`BUILD_LOG.md`](./BUILD_LOG.md) for full records of what we tried, what broke, what we decided and why!
-
+> Built for Vruksha Consultancy (Chennai) hiring challenge.
 
 ---
 
-## 🏛️ System Architecture
+## Try it
 
-```text
-                    SPEAKLOG
-                       │
-              ┌────────┴────────┐
-              │                 │
-           Tamil              English
-              │                 │
-              └────────┬────────┘
-                       ↓
-               Voice Agent
-          SpeechSynthesis + Web Speech
-                       ↓
-              Conversation FSM
-                       ↓
-               OpenAI Follow-up
-                       ↓
-                 120 seconds
-                       ↓
-             Student Transcript
-                       ↓
-                  Confirmation
-                       ↓
-               Save Log + ID
-                       ↓
-              AI Mentor Analysis
-                       ↓
-                localStorage
-```
+**Live:** https://speak-logs.vercel.app
+**Repo:** https://github.com/Esa006/speak-logs
+**My Proof build log:** https://proof.zeromaintenanceengineer.in/next/log/80be0193-3eb9-4748-99a6-480693394c49
 
 ---
 
-## 💬 Conversation Phases
+## How to test (3 lines)
 
-The conversation follows a clean, 9-stage state machine that keeps the student engaged and feels natural:
-
-```text
-INTRO       (Warm welcome + "What did you work on today?")
-  ↓
-WHAT_TRIED  (Student answers what they worked on)
-  ↓
-FOLLOWUP_1  (One natural follow-up question via OpenAI GPT-4o-mini)
-  ↓
-WHAT_BROKE  (Agent asks what broke or didn't work)
-  ↓
-FOLLOWUP_2  (One natural follow-up question via OpenAI GPT-4o-mini)
-  ↓
-WHY         (Agent asks why they think that happened / root cause)
-  ↓
-FOLLOWUP_3  (One natural follow-up question via OpenAI GPT-4o-mini)
-  ↓
-CONFIRM     (Review verbatim transcript + student confirms via voice or button)
-  ↓
-DONE        (Log ID generated + saved to localStorage + AI mentor analysis)
-```
+1. Open **https://speak-logs.vercel.app** in Google Chrome and allow the mic when prompted.
+2. Pick Tamil or English, press **Start**, and speak when the agent asks its questions.
+3. After the third follow-up, say **"yes, post it"** (or **"sari post pannu"**) to save your log.
 
 ---
 
-## 🔒 Security & Architecture
+## What it does
 
-Secure, serverless architecture where **no API keys are ever stored in the browser or localStorage**:
-
-```text
-Browser (Web Speech API)
-   ↓ POST /api/follow-up or /api/analyze
-Vercel Serverless API (api/*.js)
-   ↓ (Server-side OPENAI_API_KEY)
-OpenAI API (gpt-4o-mini)
-```
-
-- **Environment Variable**: Use only `OPENAI_API_KEY=your_key` inside Vercel Environment Variables (or `.env.local` for local development).
-- **Zero Client Key Storage**: `speaklog_openai_api_key` has been completely eliminated from the client-side code and browser `localStorage`.
-- **Persistence Scope**: The application persists logs to client-side `localStorage` with a generated ID (`LOG-XXXXX`). It does not rely on or claim an external database or Proof platform backend.
+| Step | Brief says | SpeakLog does |
+|------|-----------|---------------|
+| Ask | Tamil or English: what did you try, what broke, why? | 3 questions + 1 follow-up each, bilingual |
+| Follow up | One question built from what they just said | Embeds their exact words: "When working on X, what tool did you use?" |
+| Keep words | Word for word. No summary | verbatim:true — raw speech stored unchanged |
+| Post on yes | Read it back. Post only when they say so | isConfirmation() matches voice + button; Proof JSON-RPC 2.0 |
 
 ---
 
-## 🛠️ Getting Started
+## Architecture
 
-### 1. Install Dependencies
-```bash
+Chrome Web Speech API
+  -> useVoicePipeline.js  (silence debounce, dedup, mutex lock)
+       -> SpeakLog.jsx     (9-phase FSM: INTRO to DONE)
+            |-> /api/follow-up -> OpenAI gpt-4o-mini -> 1 follow-up per answer
+            +-> /api/logs     -> Proof JSON-RPC 2.0 tools/call post_log
+
+---
+
+## What broke during the build (and how we fixed it)
+
+- **Interim duplication bug** — Chrome ASR repeats trailing 500 ms audio buffer across segments.
+  Fixed with sliding-window overlap algorithm (mergeWithOverlap, up to 8-word seam detection).
+
+- **Recursive acoustic feedback** — TTS audio was re-transcribed back into the pipeline.
+  Fixed with isSpeakingRef mutex lock that gates onresult events while agent speaks.
+
+- **Abrupt cutoffs** — Fixed 10s timeout interrupted students mid-thought.
+  Replaced with 3s silence-debounce VAD that waits for genuine pause.
+
+Full details in BUILD_LOG.md.
+
+---
+
+## Environment variables (Vercel)
+
+- OPENAI_API_KEY : GPT-4o-mini follow-up questions (snippet-based fallback if absent)
+- PROOF_TOKEN    : Bearer token for posting to Proof (add in Vercel dashboard)
+
+Never commit either to git — both are in .env.local (gitignored).
+
+---
+
+## Run locally
+
+git clone https://github.com/Esa006/speak-logs.git
+cd speak-logs
 npm install
-```
-
-### 2. Configure Environment (Optional for Live OpenAI)
-Copy `.env.example` to `.env.local` to enable live OpenAI follow-up questions:
-```bash
 cp .env.example .env.local
-```
-Add your key inside `.env.local`:
-```env
-OPENAI_API_KEY=sk-...
-```
-
-*(If omitted or running offline, SpeakLog seamlessly uses its smart, natural contextual fallback questions and heuristics).*
-
-### 3. Start Development Server
-```bash
 npm run dev
-```
-Open **[http://localhost:5173](http://localhost:5173)** in Google Chrome (required for the Web Speech API).
-
-### 4. Run Automated Pipeline Verification
-Run the regression check anytime to verify all 8 pipeline layers:
-```bash
-npm run verify
-```
-
-### 5. Build for Production
-```bash
-npm run build
-```
-
----
-
-## 🚀 Deployment to Vercel
-
-SpeakLog is pre-configured with [`vercel.json`](file:///c:/Users/Admin/Downloads/SpeakLog/vercel.json) and serverless API endpoints in [`api/`](file:///c:/Users/Admin/Downloads/SpeakLog/api):
-
-1. Push your code to your GitHub repository:
-   ```bash
-   git add .
-   git commit -m "feat: speaklog assignment flow and serverless architecture"
-   git push origin main
-   ```
-2. Log in to [vercel.com](https://vercel.com) and click **"Add New Project"**.
-3. Import your repository (`Esa006/speak-logs`).
-4. In **Environment Variables**, add:
-   - `OPENAI_API_KEY`: `your_openai_api_key`
-5. Click **Deploy**. Vercel will provide an **HTTPS** URL (required for the Chrome Web Speech API).
-
----
-
-## 📜 Detailed Proof Document
-See [`PROOF.md`](file:///c:/Users/Admin/Downloads/SpeakLog/PROOF.md) for full step-by-step evidence, verified test runs, and engineering methodology.
-
----
-
-## 📜 License
-MIT
+# open http://localhost:5173 in Chrome
