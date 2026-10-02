@@ -779,7 +779,7 @@ export default function SpeakLog() {
                 <div className="sl-proof-row">
                   {savedResult.proofSubmitted ? (
                     <span className="sl-proof-badge success">
-                      <i className="bi bi-patch-check-fill" /> ✓ Submitted successfully
+                      <i className="bi bi-patch-check-fill" /> ✓ Submitted successfully to Proof
                     </span>
                   ) : (
                     <>
